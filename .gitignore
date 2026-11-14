@@ -1,0 +1,5 @@
+# Signed builds and the Mozilla upload id (made by sign.sh)
+web-ext-artifacts/
+.amo-upload-uuid
+__pycache__/
+*.pyc

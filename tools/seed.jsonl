@@ -1,0 +1,104 @@
+{"text": "weather tomorrow", "cls": "search"}
+{"text": "pizza near me", "cls": "search"}
+{"text": "firefox 159 release notes", "cls": "search"}
+{"text": "rx 6700 xt price", "cls": "search"}
+{"text": "kubuntu download", "cls": "search"}
+{"text": "python requests docs", "cls": "search"}
+{"text": "time in tokyo", "cls": "search"}
+{"text": "nba scores", "cls": "search"}
+{"text": "usd to eur", "cls": "search"}
+{"text": "best thunderbolt dock", "cls": "search"}
+{"text": "rust book", "cls": "search"}
+{"text": "mdn array flat", "cls": "search"}
+{"text": "wayland vs x11", "cls": "search"}
+{"text": "canvas login", "cls": "search"}
+{"text": "translate hola", "cls": "search"}
+{"text": "bus schedule", "cls": "search"}
+{"text": "new york times", "cls": "search"}
+{"text": "convert mp4 to gif", "cls": "search"}
+{"text": "steam deck oled specs", "cls": "search"}
+{"text": "lofi music", "cls": "search"}
+{"text": "dentist hours", "cls": "search"}
+{"text": "movies this weekend", "cls": "search"}
+{"text": "npm left-pad", "cls": "search"}
+{"text": "arch wiki pipewire", "cls": "search"}
+{"text": "linux kernel 7.0 changelog", "cls": "search"}
+{"text": "github status", "cls": "search"}
+{"text": "framework laptop 16", "cls": "search"}
+{"text": "amazon order status", "cls": "search"}
+{"text": "rtx 5090 benchmarks", "cls": "search"}
+{"text": "library hours today", "cls": "search"}
+{"text": "how old is the moon", "cls": "search"}
+{"text": "define ephemeral", "cls": "search"}
+{"text": "kde plasma 6 shortcuts", "cls": "search"}
+{"text": "gmail", "cls": "search"}
+{"text": "reddit linux", "cls": "search"}
+{"text": "coffee shops open now", "cls": "search"}
+{"text": "sqlite pragma list", "cls": "search"}
+{"text": "ohm's law formula", "cls": "search"}
+{"text": "cheap flights to denver", "cls": "search"}
+{"text": "costco gas price", "cls": "search"}
+{"text": "explain how a monad works like i'm new to it", "cls": "ask"}
+{"text": "what's the difference between tcp and udp?", "cls": "ask"}
+{"text": "why does my laptop get hot when charging?", "cls": "ask"}
+{"text": "can you summarize the french revolution in a paragraph", "cls": "ask"}
+{"text": "is it worth buying an egpu for local ai?", "cls": "ask"}
+{"text": "how do i ask my teacher for an extension politely", "cls": "ask"}
+{"text": "write a short email to my landlord about the broken heater", "cls": "ask"}
+{"text": "what should i cook with chicken, rice and spinach", "cls": "ask"}
+{"text": "give me 5 names for a study group", "cls": "ask"}
+{"text": "how does wifi actually work", "cls": "ask"}
+{"text": "explain big o notation simply", "cls": "ask"}
+{"text": "what are good habits for studying for finals", "cls": "ask"}
+{"text": "help me understand derivatives", "cls": "ask"}
+{"text": "rewrite this paragraph to sound more professional", "cls": "ask"}
+{"text": "what does a kernel do in an operating system", "cls": "ask"}
+{"text": "should i learn rust or go first?", "cls": "ask"}
+{"text": "how do vaccines train the immune system", "cls": "ask"}
+{"text": "what's a good way to remember spanish verb endings", "cls": "ask"}
+{"text": "proofread this sentence for me", "cls": "ask"}
+{"text": "why is the sky blue", "cls": "ask"}
+{"text": "how do i negotiate rent", "cls": "ask"}
+{"text": "explain what a vpn does and when i need one", "cls": "ask"}
+{"text": "make a workout plan for 3 days a week", "cls": "ask"}
+{"text": "what's the plot of dune without spoilers", "cls": "ask"}
+{"text": "is it bad to leave my laptop plugged in all the time?", "cls": "ask"}
+{"text": "how do credit scores work", "cls": "ask"}
+{"text": "research the best laptops for linux in 2026 and compare battery life, price and repairability", "cls": "deep"}
+{"text": "compare every egpu enclosure that works with linux and tell me which is best for an rx 6700 xt", "cls": "deep"}
+{"text": "do a deep dive on the history of the byzantine empire with sources", "cls": "deep"}
+{"text": "what are all the options for self hosting email and the tradeoffs of each, with sources", "cls": "deep"}
+{"text": "research which colleges have the best computer science programs for transfer students", "cls": "deep"}
+{"text": "write a detailed report comparing local llm runtimes llama.cpp, vllm and ollama on amd gpus", "cls": "deep"}
+{"text": "investigate the long term health effects of intermittent fasting and cite studies", "cls": "deep"}
+{"text": "compare all the major note taking apps in depth for students who use linux", "cls": "deep"}
+{"text": "research the job market for junior rust developers and summarize trends", "cls": "deep"}
+{"text": "analyze the pros and cons of every linux distro for gaming with references", "cls": "deep"}
+{"text": "find and compare every scholarship i could apply to as a cs student", "cls": "deep"}
+{"text": "thorough comparison of wayland compositors and their stability in 2026", "cls": "deep"}
+{"text": "add dark mode to my firefox extension", "cls": "code"}
+{"text": "fix the bug where the sidebar doesn't close all tabs", "cls": "code"}
+{"text": "build a tauri app that shows my calendar", "cls": "code"}
+{"text": "refactor the router into smaller functions", "cls": "code"}
+{"text": "write a python script that renames my photos by date", "cls": "code"}
+{"text": "implement a settings page with json validation", "cls": "code"}
+{"text": "why does cargo build fail with a borrow checker error", "cls": "code"}
+{"text": "make the new tab page load faster", "cls": "code"}
+{"text": "add unit tests for the classifier", "cls": "code"}
+{"text": "set up a github actions workflow that runs the tests", "cls": "code"}
+{"text": "create a react component for a todo list", "cls": "code"}
+{"text": "migrate this project from webpack to vite", "cls": "code"}
+{"text": "debug why my svelte store isn't updating", "cls": "code"}
+{"text": "write a bash script to back up my documents folder", "cls": "code"}
+{"text": "rename the helper function and update all the call sites", "cls": "code"}
+{"text": "add a rust cli that reads a toml config", "cls": "code"}
+{"text": "fix the typo in the readme", "cls": "code"}
+{"text": "port the extension to manifest v3", "cls": "code"}
+{"text": "build a dashboard that shows my canvas assignments", "cls": "code"}
+{"text": "add error handling to the native messaging helper", "cls": "code"}
+{"text": "implement drag and drop for the widgets", "cls": "code"}
+{"text": "bump the version number and rebuild the xpi", "cls": "code"}
+{"text": "convert this javascript file to typescript", "cls": "code"}
+{"text": "make a kde plasma widget that shows gpu temperature", "cls": "code"}
+{"text": "write a sqlite migration that adds a tags table", "cls": "code"}
+{"text": "create a new app from scratch for tracking my study sessions", "cls": "code"}

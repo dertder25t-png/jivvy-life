@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hub Settings</title>
+  <link rel="stylesheet" href="newtab.css">
+  <style>
+    .wrap { padding-top: 40px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    h2 { font-size: 16px; margin: 28px 0 8px; }
+    textarea.json { width: 100%; min-height: 360px; font: 13px/1.5 ui-monospace, monospace; background: var(--panel);
+      color: inherit; border: 1px solid var(--line); border-radius: 10px; padding: 12px; tab-size: 2; }
+    .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+    button.b { font: inherit; border: 1px solid var(--line); background: var(--panel); color: inherit; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+    button.b.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+    pre { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; overflow: auto; font-size: 12px; max-height: 420px; }
+    .status { font-size: 14px; }
+    .err { color: #d0473b; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <h1>Hub settings</h1>
+    <p class="muted">Write only what you want to change. It's merged on top of the defaults shown below.</p>
+
+    <h2>Your settings (JSON)</h2>
+    <textarea id="cfg" class="json" spellcheck="false"></textarea>
+    <div class="btns">
+      <button class="b primary" id="save">Save</button>
+      <button class="b" id="example">Insert example</button>
+      <span id="status" class="status muted"></span>
+    </div>
+
+    <details>
+      <summary>Defaults</summary>
+      <pre id="defaults"></pre>
+    </details>
+
+    <h2>Local helper (for Claude Code)</h2>
+    <div class="btns">
+      <button class="b" id="ping">Check helper</button>
+      <span id="helper" class="status muted"></span>
+    </div>
+
+    <h2>Your data</h2>
+    <p class="muted">Only stored in this browser. Corrections are the routes you chose yourself; <code>tools/train.py</code> learns from them.</p>
+    <div class="btns">
+      <span id="counts" class="status muted"></span>
+    </div>
+    <div class="btns">
+      <button class="b" id="export">Export corrections</button>
+      <button class="b" id="clearCorr">Clear corrections</button>
+      <button class="b" id="clearHist">Clear history</button>
+    </div>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
