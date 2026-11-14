@@ -5,9 +5,14 @@ import { decide, codeMode, finish } from "./core/router.js";
 import { askLaya, layaHit, lacksCertainty } from "./core/laya.js";
 import { loadModel } from "./core/classifier.js";
 import * as store from "./core/storage.js";
+import { calc } from "./core/calc.js";
+import { mount as mountMoves, seedDemo } from "./ui/moves-ui.js";
 
 const $ = (id) => document.getElementById(id);
 const q = $("q"), chip = $("chip"), hint = $("hint"), menu = $("menu"), toastEl = $("toast");
+
+// Preview only (page opened outside the extension): ?demo=1 fills localStorage with sample moves.
+if (!store.inExtension && new URLSearchParams(location.search).get("demo") === "1") await seedDemo(store);
 
 const cfg = await loadConfig();
 
@@ -29,7 +34,8 @@ for (const def of cfg.urlRoutes) registerRoute(urlRoute(def));
 const model = await loadModel();
 
 // auto: what the router picked. pick: what you chose in the menu (overrides auto).
-const state = { auto: null, pick: null, mode: null, project: undefined, armed: false };
+const state = { auto: null, pick: null, mode: null, project: undefined, armed: false, calc: null };
+let moves = null; // the predictive-moves UI, mounted after the widgets
 
 function current() {
   const a = state.auto;
@@ -40,6 +46,9 @@ function current() {
   const cls = r?.cls;
   return {
     ...a,
+    // A rule may swap in its own text (nav alias → its URL); a route you pick gets what you typed.
+    text: state.pick ? a.raw ?? a.text : a.text,
+    label: state.pick ? undefined : a.label,
     route,
     cls,
     mode: cls === "code" ? state.mode || (state.pick ? null : a.mode) || codeMode(a.text) : undefined,
@@ -59,16 +68,16 @@ function render() {
   }
   if (d.pending) {
     chip.textContent = "→ Decides when you press Enter";
-    hint.textContent = "";
+    hint.textContent = state.calc || "";
     return;
   }
   const r = routes.get(d.route);
-  const bits = [r ? r.label : d.route + " (unknown route)"];
+  const bits = [d.label || (r ? r.label : d.route + " (unknown route)")];
   if (d.mode) bits.push(d.mode === "plan" ? "plan mode" : "direct");
   if (d.cls === "code") bits.push(d.project ? d.project.name : "no project");
   chip.textContent = "→ " + bits.join(" · ");
   chip.title = "Why: " + d.why;
-  hint.textContent = state.armed ? "Press Enter again to start it, Esc to cancel." : d.why;
+  hint.textContent = state.armed ? "Press Enter again to start it, Esc to cancel." : state.calc || d.why;
 }
 
 let timer;
@@ -76,6 +85,7 @@ function preview() {
   clearTimeout(timer);
   timer = setTimeout(() => {
     state.auto = decide(q.value, cfg, { model, final: false });
+    state.calc = calc(q.value); // only the hint line; the route stays the same
     render();
   }, 300);
 }
@@ -227,6 +237,8 @@ q.addEventListener("keydown", (e) => {
   } else if (e.key === "Tab" && !e.shiftKey && q.value.trim()) {
     e.preventDefault();
     openMenu();
+  } else if (e.key === "Tab" && !e.shiftKey && !e.altKey && !e.ctrlKey && moves?.tabTop()) {
+    e.preventDefault(); // empty box: the first staged move
   }
 });
 menu.addEventListener("keydown", (e) => {
@@ -262,6 +274,32 @@ for (const id of cfg.widgets) {
     body.textContent = "This widget failed to load: " + err.message;
   }
 }
+
+// ---- predictive moves: banner, drawer and staged pills (after the widgets) ----
+moves = await mountMoves({
+  cfg,
+  store,
+  q,
+  toast,
+  ...(({ open, copy, native }) => ({ open, copy, native }))(context({})),
+  fill(text, pick) {
+    q.value = text;
+    resetChoice();
+    if (pick) state.pick = pick;
+    autosize();
+    clearTimeout(timer);
+    // final: a picked route needs a settled decision (a pending one would hide the pick on the chip)
+    state.auto = decide(text, cfg, { model, final: true });
+    state.calc = calc(text);
+    render();
+    q.focus();
+  },
+  async runRoute(id, text) {
+    const r = routes.get(id);
+    if (!r) return toast(`No route called “${id}”. Check your settings.`);
+    await r.run(text, context({}));
+  },
+}).catch((err) => (console.warn("moves UI failed:", err), null));
 
 // ---- refresh scanned projects at most once an hour (one short helper run) ----
 if (cfg.projectRoots.length && store.inExtension) {

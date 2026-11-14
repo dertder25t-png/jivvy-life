@@ -52,11 +52,13 @@ function configRules(cfg) {
   return list;
 }
 
+// A hit may carry `text` (what the route gets instead of what you typed, e.g. a nav alias's URL)
+// and `label` (shown on the chip instead of the route's name). `raw` keeps what you typed.
 export function finish(hit, text, cfg, project) {
   const route = hit.route || cfg.classRoutes[hit.cls];
   const cls = routes.get(route)?.cls ?? hit.cls;
   const mode = cls === "code" ? hit.mode || codeMode(text) : undefined;
-  return { ...hit, route, cls, mode, text, project };
+  return { ...hit, route, cls, mode, text: hit.text ?? text, raw: text, project };
 }
 
 // final=false is the cheap live preview while typing.

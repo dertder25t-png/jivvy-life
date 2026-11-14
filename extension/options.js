@@ -15,11 +15,52 @@ const EXAMPLE = {
   rules: [{ id: "recipes", pattern: "\\brecipe\\b", route: "search" }],
   links: [{ label: "Canvas", url: "https://canvas.instructure.com" }],
   theme: { accent: "#e07a5f" },
+  name: "Sam",
+  assetFolder: "/home/you/Pictures/assets",
+  canvas: { host: "school.instructure.com", courses: { "12345": { name: "Photography I", exts: ["tif", "jpg", "png"] } } },
+  navAliases: { drive: "https://drive.google.com/", "my school": "https://www.example.edu/" },
+  moves: { enabled: true, shortcutAt: 0.85, layaStaging: true, layaBatteryMode: "ac_only", layaBatteryMinPercent: 40, layaLowPowerOverride: true },
 };
 
 $("defaults").textContent = JSON.stringify(DEFAULTS, null, 2);
 const user = await store.get("userConfig", {});
 $("cfg").value = JSON.stringify(user, null, 2);
+
+// Laya battery controls: shown from, and written to, moves.layaBatteryMode / layaBatteryMinPercent in the JSON.
+const modes = ["ac_only", "always", "threshold", "never"];
+function syncLaya() {
+  $("layaPctWrap").hidden = $("layaMode").value !== "threshold";
+}
+function loadLaya() {
+  let m = {};
+  try {
+    m = JSON.parse($("cfg").value || "{}").moves || {};
+  } catch {
+    /* invalid JSON: show the defaults */
+  }
+  $("layaMode").value = modes.includes(m.layaBatteryMode) ? m.layaBatteryMode : "ac_only";
+  $("layaPct").value = Number.isFinite(m.layaBatteryMinPercent) ? m.layaBatteryMinPercent : 40;
+  $("layaLow").checked = m.layaLowPowerOverride !== false;
+  syncLaya();
+}
+function writeLaya() {
+  syncLaya();
+  let o;
+  try {
+    o = JSON.parse($("cfg").value || "{}");
+  } catch {
+    return;
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) return;
+  const pct = Math.max(0, Math.min(100, Math.round(Number($("layaPct").value))));
+  o.moves = { ...(o.moves || {}), layaBatteryMode: $("layaMode").value, layaBatteryMinPercent: Number.isFinite(pct) ? pct : 40, layaLowPowerOverride: $("layaLow").checked };
+  $("cfg").value = JSON.stringify(o, null, 2);
+}
+loadLaya();
+$("layaMode").addEventListener("change", writeLaya);
+$("layaPct").addEventListener("change", writeLaya);
+$("layaLow").addEventListener("change", writeLaya);
+$("cfg").addEventListener("change", loadLaya);
 
 $("save").addEventListener("click", async () => {
   let parsed;
@@ -57,6 +98,24 @@ async function counts() {
   $("counts").textContent = `${c.length} corrections · ${h.length} history items`;
 }
 counts();
+
+async function moveCounts() {
+  const l = await store.get("moveLabels", []);
+  const n = (o) => l.filter((x) => x.outcome === o).length;
+  $("moveCounts").textContent = `${l.length} move labels · ${n("fired")} used · ${n("dismissed")} dismissed · ${n("ignored")} ignored`;
+}
+moveCounts();
+
+function download(name, lines) {
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+$("exportMoves").addEventListener("click", async () => download("hub-move-labels.jsonl", (await store.get("moveLabels", [])).map((x) => JSON.stringify(x))));
+$("clearMoves").addEventListener("click", async () => (await store.set("moveLabels", []), moveCounts()));
 
 $("export").addEventListener("click", async () => {
   const c = await store.get("corrections", []);

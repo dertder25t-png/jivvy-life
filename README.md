@@ -47,6 +47,47 @@ Nothing here automates any AI website. It only opens links and starts programs o
 
 Claude Code starts in **plan mode** unless the request looks small ("fix the typo", "rename…").
 
+## Predictive moves (v0.4)
+
+Lifeboard watches your Firefox history and downloads, all on your computer, and quietly gets your next step ready. It never pops up a window, never takes focus, and never acts until you press a key or click.
+
+| Move | When | What's ready on the new tab |
+|---|---|---|
+| Instant nav | You type a site name or a typo of one (`egales nest`, `google dive`, `calandar`) | Enter goes straight to the site, no Google in between |
+| Ask AI instead | 2+ similar Google searches within 45 s, or one long one | An "Ask Claude" / "Ask Gemini" pill holding all your attempts, plus an **AI** badge on the toolbar button |
+| Canvas bridge | You open a Canvas assignment | Files from ~/Downloads changed in the last 30 min that match the course's file types: Show in folder / Copy path. On quizzes: a `Course · Quiz · URL` note copied for Jivvy Study or Claude |
+| Asset harvest | 3+ Pinterest or stock-photo searches within 5 min | New image/font downloads, with one click to move them to `assetFolder` (never overwrites; Undo for 10 min) |
+| Calculator | `157919MB to gb`, `1.43 kg to lb`, `8tb at 400mbps`, X-T4 recording time | The answer shows under the box as you type |
+
+- A banner shows newly found moves. Under **View & Enable** you can turn each one on, set how sure it has to be before it's staged, or dismiss it. New moves stage nothing until you enable them.
+- Staged moves appear as pills under the box. **Alt+1–9** uses one, **Tab** in an empty box uses the first, and **×** dismisses one.
+- **Meta+Shift+.** works from anywhere on the desktop. It opens the top staged link if it's at least 85% sure (`moves.shortcutAt`). It only ever opens links; it never moves files. It starts working after you next log in.
+- **Learning:**
+  - `helper/pattern_miner.py` runs every night (user unit `hub-miner.timer`). It reads a copy of `places.sqlite` and deletes the copy afterwards.
+  - It skips sign-in redirects (Microsoft, Google, Canvas SSO, Cloudflare Access).
+  - It learns your nav shortcuts and Canvas courses, and looks for site sequences you repeat (4+ times, on 3+ days).
+  - Results stay in `~/.local/share/hub-dashboard/` (mode 600) and never go into this repo.
+  - To seed it the first time from an export of your history: `helper/install.sh --seed path/to/intent.json`.
+- **Labels:**
+  - Using a pill is saved as a "fired" label and × as "dismissed".
+  - A pill that expires or sits unused for 8 new tabs is saved as "ignored" (a weak label).
+  - Options → *Export move labels* gives you that file.
+- **laya:**
+  - `POST /workflow` on the laya service can also suggest moves.
+  - Untrained, it got 3 of 8 test workflows right, so it stays off: `moves.layaStaging: false`.
+  - Turned on, it stages only when it's sure, routes the answer "auto" and says "yes".
+- **Training laya's move picker:** run these from `hub-dashboard/`.
+  - `python3 -I helper/train_workflow_cli.py --mine` labels sessions from your history automatically. It also saves near-misses for you to label.
+  - `--interactive` lets you label those with one key each: `1`–`5` for a move, `n` for none, `s` to skip, `q` to save and train.
+  - `--train` fits the move picker into `workflow-fit/`, next to the saved Google-or-AI training (that training isn't changed). It takes ~10 min on the CPU.
+  - laya uses the GPU automatically when PyTorch can see one (`"device": "auto"` in `laya.json`).
+  - Benchmark (held out, `helper/workflow_benchmark.json`): 5/8 at ~1.1 s on the CPU, up from 0/8 at ~2.1 s untrained.
+- **Settings** (Options JSON): `name`, `assetFolder`, `canvas.courses`, `navAliases`, `moves`.
+- **New permissions:**
+  - `history` and `downloads` are used to notice moves.
+  - `alarms` runs the daily refresh.
+  - Nothing is sent anywhere.
+
 ## Customizing (no code)
 
 Options page (gear icon, top right). Write only what you change; it merges onto the defaults. Click *Insert example* to see the shape:

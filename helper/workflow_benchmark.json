@@ -1,0 +1,23 @@
+{
+ "about": "Held-out /workflow benchmark (never trained on). Generic sites only; the 8 v0.4.0 measurement cases rewritten as compact state (docs/predictive-moves-contract.md). A case counts when next_move matches and should_stage is yes (expected true) or no (expected false).",
+ "moves": ["nav_shortcut_interceptor", "search_frustration_escalator", "canvas_study_bridge",
+           "creative_asset_router", "seq_mail-google-com_calendar-google-com_docs-google-com"],
+ "cases": [
+  {"id": "rephrased_search", "state": ["google:q=can you get around not having ibis", "google:q=l mount lenses with ois ibis", "google:q=does ois replace ibis"],
+   "next_move": "search_frustration_escalator", "should_stage": true},
+  {"id": "canvas_assignment", "state": ["school.instructure.com/courses/1/modules", "school.instructure.com/courses/1/assignments/2"],
+   "next_move": "canvas_study_bridge", "should_stage": true},
+  {"id": "creative_harvest", "state": ["pinterest:q=retro logo", "pexels:q=mixer board", "pinterest:q=vintage poster typography", "dl:mixer.jpg"],
+   "next_move": "creative_asset_router", "should_stage": true},
+  {"id": "weather_only", "state": ["weather.com/"],
+   "next_move": "none", "should_stage": false},
+  {"id": "typed_short_name", "state": ["google:q=yt", "youtube.com/", "google:q=yt", "youtube.com/"],
+   "next_move": "nav_shortcut_interceptor", "should_stage": true},
+  {"id": "unit_conversions", "state": ["google:q=350 f to c", "google:q=12 inches in cm", "google:q=3 cups to ml"],
+   "next_move": "none", "should_stage": false},
+  {"id": "morning_sequence", "state": ["mail.google.com/mail/u/0/", "calendar.google.com/calendar/r", "docs.google.com/"],
+   "next_move": "seq_mail-google-com_calendar-google-com_docs-google-com", "should_stage": true},
+  {"id": "casual_browsing", "state": ["reddit.com/r/pics", "news.ycombinator.com/"],
+   "next_move": "none", "should_stage": false}
+ ]
+}

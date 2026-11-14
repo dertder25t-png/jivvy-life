@@ -69,6 +69,18 @@ export const DEFAULTS = {
 
   // CSS variables, e.g. { "accent": "#e07a5f", "radius": "14px" }
   theme: {},
+
+  // Predictive moves (see docs/predictive-moves-contract.md). Turn single moves on in the drawer on the new tab.
+  // shortcutAt: confidence the global shortcut (Meta+Shift+.) needs. layaStaging: ask laya when no rule matched.
+  // layaBatteryMode: "ac_only" (laya only on AC; on battery just the rules), "always", "threshold" (on battery only at
+  // layaBatteryMinPercent or more), or "never".
+  moves: { enabled: true, shortcutAt: 0.85, layaStaging: true, layaBatteryMode: "ac_only", layaBatteryMinPercent: 40, layaLowPowerOverride: true },
+  name: "", // for the banner greeting
+  assetFolder: "", // where "Move N new files" puts design downloads, e.g. "/home/you/Pictures/assets"
+  // Canvas: courses map a course id to { name, exts: ["pdf", "indd"] } (file types for "recent files").
+  canvas: { host: "school.instructure.com", courses: {} },
+  // Typed text → address, e.g. { "drive": "https://drive.google.com" }. Learned ones are added under these.
+  navAliases: {},
 };
 
 function byId(defaults, user) {
@@ -79,7 +91,8 @@ function byId(defaults, user) {
 
 export function merge(user = {}) {
   const cfg = { ...DEFAULTS, ...user };
-  for (const k of ["prefixes", "classRoutes", "theme", "laya"]) cfg[k] = { ...DEFAULTS[k], ...(user[k] || {}) };
+  for (const k of ["prefixes", "classRoutes", "theme", "laya", "moves", "canvas", "navAliases"]) cfg[k] = { ...DEFAULTS[k], ...(user[k] || {}) };
+  cfg.canvas.courses = { ...DEFAULTS.canvas.courses, ...(user.canvas?.courses || {}) };
   cfg.urlRoutes = byId(DEFAULTS.urlRoutes, user.urlRoutes);
   cfg.rules = [...(user.rules || []), ...DEFAULTS.rules];
   return cfg;
@@ -90,6 +103,14 @@ export async function loadConfig() {
   const scanned = await store.get("scannedProjects", { list: [] });
   const named = new Set(cfg.projects.map((p) => p.name.toLowerCase()));
   cfg.allProjects = [...cfg.projects, ...scanned.list.filter((p) => !named.has(p.name.toLowerCase()))];
+
+  // What the helper learned from your history ("learned", see the contract) goes under your own settings.
+  // Learned nav aliases only count once you've enabled that move in the drawer; yours always do.
+  const learned = await store.get("learned", {});
+  const moves = await store.get("moves", {});
+  if (moves.nav_shortcut_interceptor?.status === "enabled") cfg.navAliases = { ...(learned.navAliases || {}), ...cfg.navAliases };
+  cfg.canvas.courses = { ...(learned.canvasCourses || {}), ...cfg.canvas.courses };
+  if (!cfg.name && learned.name) cfg.name = learned.name;
   return cfg;
 }
 

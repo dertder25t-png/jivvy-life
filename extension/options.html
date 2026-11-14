@@ -53,6 +53,35 @@
       <button class="b" id="clearCorr">Clear corrections</button>
       <button class="b" id="clearHist">Clear history</button>
     </div>
+
+    <h2>Predictive moves</h2>
+    <p class="muted">Turn moves on in the drawer on the new tab. Settings (<code>name</code>, <code>assetFolder</code>, <code>canvas</code>, <code>navAliases</code>, <code>moves</code>) go in the JSON above. <code>moves.layaBatteryMode</code> decides when laya may run in the background: <code>ac_only</code> (default; on battery only the rules run), <code>always</code>, <code>threshold</code> (on battery only at <code>moves.layaBatteryMinPercent</code>, default 40, or more) or <code>never</code>.
+      Labels record what you did with each staged move (used, dismissed, or ignored) and stay in this browser.</p>
+    <h3 style="font-size:14px;margin:16px 0 6px">Laya on battery</h3>
+    <div class="btns">
+      <label>Run laya in the background
+        <select id="layaMode" style="font:inherit;background:var(--panel);color:inherit;border:1px solid var(--line);border-radius:8px;padding:5px 8px">
+          <option value="ac_only">only on AC power (default)</option>
+          <option value="always">always</option>
+          <option value="threshold">on battery above a charge level</option>
+          <option value="never">never</option>
+        </select>
+      </label>
+      <label id="layaPctWrap" hidden>at or above
+        <input id="layaPct" type="number" min="0" max="100" step="5" value="40" style="width:5em;font:inherit;background:var(--panel);color:inherit;border:1px solid var(--line);border-radius:8px;padding:5px 8px"> %
+      </label>
+    </div>
+    <div class="btns">
+      <label><input type="checkbox" id="layaLow" checked> Let laya run on battery when it uses the NPU or iGPU (never overrides "never")</label>
+    </div>
+    <p class="muted">Saved with the Save button above (<code>moves.layaBatteryMode</code>, <code>moves.layaBatteryMinPercent</code>, <code>moves.layaLowPowerOverride</code>). Without laya, only the rules run.</p>
+    <div class="btns">
+      <span id="moveCounts" class="status muted"></span>
+    </div>
+    <div class="btns">
+      <button class="b" id="exportMoves">Export move labels</button>
+      <button class="b" id="clearMoves">Clear move labels</button>
+    </div>
   </main>
   <script type="module" src="options.js"></script>
 </body>

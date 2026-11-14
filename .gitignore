@@ -3,3 +3,17 @@ web-ext-artifacts/
 .amo-upload-uuid
 __pycache__/
 *.pyc
+
+# Private data: never commit labels, mined rows, tokens, models or browser profiles
+labels.jsonl
+workflow_mined.jsonl
+workflow_training_seed.jsonl
+workflow_edges.jsonl
+workflow-fit/
+laya-token
+laya.json
+ov_model/
+*.sqlite
+*.sqlite-wal
+.env
+data/
