@@ -144,7 +144,7 @@ pub fn run() {
             // Bare window + auto-resizing UI webview so pane webviews can be added as children.
             let (w, h) = (1440.0, 900.0);
             let window = WindowBuilder::new(app, "main")
-                .title("Life App")
+                .title("Jivvy Life")
                 .inner_size(w, h)
                 .resizable(true)
                 .build()?;
