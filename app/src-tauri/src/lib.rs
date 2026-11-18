@@ -139,6 +139,8 @@ fn open_path(path: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![place_pane, laya_classify, laya_health, read_brief, open_path, logins::import_firefox_cookies, logins::import_passwords_csv, logins::logins_for, logins::fill_login, logins::forget_all_logins])
         .setup(|app| {
             // Bare window + auto-resizing UI webview so pane webviews can be added as children.

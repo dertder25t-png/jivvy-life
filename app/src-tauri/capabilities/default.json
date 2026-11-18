@@ -18,7 +18,9 @@
     "core:webview:allow-reparent",
     "core:window:default",
     "core:webview:allow-set-webview-position",
-    "core:webview:allow-set-webview-size"
+    "core:webview:allow-set-webview-size",
+    "updater:default",
+    "process:allow-restart"
   ],
   "webviews": [
     "main"

@@ -28,7 +28,7 @@ interface OmniFormProps {
 }
 
 // Shared input + route label + unit hint. Each mount keeps its own query string.
-const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inputRef, onDone }) => {
+export const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inputRef, onDone }) => {
   const openTab = useWorkspaceStore((s) => s.openTab);
   const [value, setValue] = useState('');
   const decision = useMemo(() => decide(value), [value]);
@@ -87,7 +87,6 @@ const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inpu
 OmniForm.displayName = 'OmniForm';
 
 export const ZenOmnibox: React.FC = () => {
-  const layoutMode = useWorkspaceStore((s) => s.layoutMode);
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -146,15 +145,6 @@ export const ZenOmnibox: React.FC = () => {
           </div>
         </div>
       </div>
-
-      {/* Zen floating pill. */}
-      {layoutMode === 'zen' && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[min(560px,calc(100vw-2rem))]">
-          <div className="rounded-2xl border border-zinc-700 bg-zinc-900/90 backdrop-blur px-4 py-2.5 shadow-xl shadow-black/40 hover:border-zinc-600 transition-colors">
-            <OmniForm variant="pill" onDone={() => undefined} />
-          </div>
-        </div>
-      )}
     </>
   );
 };

@@ -5,7 +5,8 @@
  * ALPHA NOTE: the session token is stored in localStorage ('jivvy_session'). Fine for alpha;
  * move to the OS keyring (Tauri) before wider release. The password is never persisted.
  */
-export const DEFAULT_API_BASE = 'http://127.0.0.1:4000';
+export const DEFAULT_API_BASE = 'https://staging-jivvy-life-api-ei5i.encr.app';
+const LEGACY_LOCAL_BASE = 'http://127.0.0.1:4000';
 const BASE_KEY = 'jivvy_api_base';
 const SESSION_KEY = 'jivvy_session';
 const TIMEOUT_MS = 10_000;
@@ -55,7 +56,9 @@ function emit() {
 
 export function getApiBase(): string {
   try {
-    return (localStorage.getItem(BASE_KEY) || DEFAULT_API_BASE).replace(/\/+$/, '');
+    const stored = localStorage.getItem(BASE_KEY);
+    const base = stored && stored.replace(/\/+$/, '') !== LEGACY_LOCAL_BASE ? stored : DEFAULT_API_BASE;
+    return base.replace(/\/+$/, '');
   } catch {
     return DEFAULT_API_BASE;
   }

@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Build Jivvy Life and install it for the current user (app menu + taskbar-pinnable launcher).
+# Build Jivvy Life as an AppImage and install it for the current user (app menu + taskbar-pinnable launcher).
 # No sudo. Re-run after pulling updates. Run from app/:  ./branding/install-linux.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
-npx tauri build --no-bundle
+if [ -f ~/.tauri/jivvy-life.key ]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/jivvy-life.key)"
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+fi
+npx tauri build --bundles appimage
 mkdir -p ~/.local/opt/jivvy-life ~/.local/share/applications
-install -m755 src-tauri/target/release/life-app ~/.local/opt/jivvy-life/life-app
+APPIMAGE=$(ls -t src-tauri/target/release/bundle/appimage/*.AppImage | head -1)
+install -m755 "$APPIMAGE" ~/.local/opt/jivvy-life/JivvyLife.AppImage
+rm -f ~/.local/opt/jivvy-life/life-app
 for s in 32 64 128 256 512; do
   d=~/.local/share/icons/hicolor/${s}x${s}/apps; mkdir -p "$d"
   python3 -c "from PIL import Image; Image.open('branding/logo-1024.png').resize(($s,$s), Image.LANCZOS).save('$d/life-app.png')"
@@ -17,7 +23,7 @@ Type=Application
 Name=Jivvy Life
 GenericName=Workspace
 Comment=Dashboard, tabs and notes in one window
-Exec=$HOME/.local/opt/jivvy-life/life-app
+Exec=$HOME/.local/opt/jivvy-life/JivvyLife.AppImage
 Icon=life-app
 Terminal=false
 Categories=Office;
