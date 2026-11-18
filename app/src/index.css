@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+/* Compact rail: the panel stays 256px wide but is clipped to a 48px icon strip.
+   Clip-path is paint-only, so hovering never reflows the workspace beside it. */
+.rail-collapsed {
+  clip-path: inset(0 calc(100% - 48px) 0 0);
+  transition: clip-path 200ms ease-out, box-shadow 200ms ease-out;
+}
+.rail-collapsed:hover,
+.rail-collapsed:focus-within {
+  clip-path: inset(0 0 0 0);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Collapsed rail: rows become 32px squares centred in the 48px strip, so active
+   highlights aren't cut flat against the clip edge. */
+.rail-collapsed:not(:hover):not(:focus-within) .rail-item {
+  width: 32px;
+  padding-left: 8px;
+  padding-right: 0;
+  overflow: hidden;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+/* Notes editor */
+.cm-wikilink {
+  color: #a5b4fc;
+  text-decoration: none;
+  cursor: pointer;
+}
+.cm-wikilink:hover {
+  text-decoration: underline;
+  text-decoration-color: rgba(165, 180, 252, 0.5);
+  text-underline-offset: 3px;
+}
+.cm-hashtag {
+  color: #818cf8;
+}
+.cm-quote-line {
+  border-left: 3px solid #3f3f46;
+  padding-left: 16px !important;
+}
+.cm-list-line {
+  padding-left: 32px !important;
+  text-indent: -8px;
+}
+.cm-task {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+.cm-task-open {
+  color: #71717a;
+}
+.cm-task-done {
+  color: #6366f1;
+}
+.cm-editor .cm-scroller::-webkit-scrollbar {
+  width: 10px;
+}
+.cm-editor .cm-scroller::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 6px;
+}
