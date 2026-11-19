@@ -2,11 +2,25 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+import { LAYOUT } from '../shared/layout';
 import { telemetryService } from './services/telemetryService';
-import { jivvy, isElectron, isOverlayRole } from './platform';
+import { jivvy, isElectron, isOverlayRole, isEdgeRole } from './platform';
 import { bootstrapElectronStore } from './store/workspaceStore';
 
 async function start() {
+  if (isEdgeRole) {
+    // Invisible hover strip: no store, no chrome. Entering it asks main to float the address bar.
+    document.documentElement.classList.add('overlay');
+    const strip = document.getElementById('root')!;
+    strip.style.cssText = 'position:fixed;inset:0;background:transparent';
+    let t = 0;
+    strip.addEventListener('mouseenter', () => {
+      window.clearTimeout(t);
+      t = window.setTimeout(() => jivvy!.emit({ type: 'edge-hover' }), LAYOUT.HOVER_OPEN_MS);
+    });
+    strip.addEventListener('mouseleave', () => window.clearTimeout(t));
+    return;
+  }
   if (isElectron) {
     document.documentElement.classList.add('electron');
     if (isOverlayRole) document.documentElement.classList.add('overlay');

@@ -17,6 +17,8 @@ export interface TestCtx {
   win(): BaseWindow;
   base(): WebContentsView;
   overlay(): WebContentsView | null;
+  /** The top-edge hover strip view while it is attached (auto-hide address bar), else null. */
+  edge(): WebContentsView | null;
   overlayAttached(): boolean;
   overlayRect(): Rect | null;
   store: StateStore;
@@ -192,6 +194,14 @@ export async function runSelfTest(ctx: TestCtx) {
       result(rectEq(bounds('tab_t0'), w) && rectEq(sl[0], w), `layout ${mode}`, `page ${fmt(bounds('tab_t0'))}, slot ${fmt(sl[0])}`);
       await composite(`04-layout-${mode}`);
       if (mode === 'compact-rail') {
+        // Compact + auto-hide address bar: no empty band, the page starts at the very top.
+        const li = ctx.layoutInput();
+        const pg = bounds('tab_t0');
+        result(li.autoHideAddressBar && pg?.y === 0 && sl[0]?.y === 0, 'compact + auto-hide: page top is 0 (no empty band)', `page ${fmt(pg)}, slot ${fmt(sl[0])}, topBar=${li.showTopBar}`);
+        const edgeRect = ctx.edge()?.getBounds();
+        result(!!edgeRect && edgeRect.y === 0 && edgeRect.height <= 6 && edgeRect.x === pg!.x, 'top-edge hover strip sits over the page top', fmt(edgeRect));
+      }
+      if (mode === 'compact-rail') {
         // Hover the rail: the expanded rail floats over the page; the page doesn't move.
         const b0 = bounds('tab_t0');
         base().sendInputEvent({ type: 'mouseEnter', x: 20, y: 300 });
@@ -215,10 +225,12 @@ export async function runSelfTest(ctx: TestCtx) {
     // ---- 6b. auto-hide address bar and Zen top bar float over the page ----
     {
       const b0 = bounds('tab_t0');
-      await hoverBase(700, 35);
+      const ev = ctx.edge()?.webContents;
+      ev?.sendInputEvent({ type: 'mouseLeave', x: 0, y: 0 });
+      ev?.sendInputEvent({ type: 'mouseEnter', x: 300, y: 1 });
+      ev?.sendInputEvent({ type: 'mouseMove', x: 300, y: 1 });
       const abOk = await waitFor(() => runtime.overlay?.kind === 'addressbar' && !!ctx.overlayRect(), 3000);
-      const dbg = await ui<string>(`(() => { const e = document.elementFromPoint(700, 35); return e ? e.tagName + '.' + e.className.slice(0, 60) : 'none'; })()`);
-      result(abOk && rectEq(bounds('tab_t0'), b0), 'auto-hide address bar reveals over the page', `overlay ${fmt(ctx.overlayRect())} kind=${runtime.overlay?.kind} under=${dbg}`);
+      result(abOk && rectEq(bounds('tab_t0'), b0) && bounds('tab_t0')!.y === 0, 'auto-hide address bar floats over the page from the top-edge strip (page not resized)', `overlay ${fmt(ctx.overlayRect())} kind=${runtime.overlay?.kind}`);
       await sleep(200);
       await composite('05b-address-bar-hover');
       await ui(`window.jivvy.overlayClose()`);

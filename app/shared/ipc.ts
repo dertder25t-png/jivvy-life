@@ -50,7 +50,7 @@ export interface InitPayload {
   runtime: RuntimeState;
 }
 
-export type UiEvent = { type: 'edit-folder'; id: string } | { type: 'focus-address' };
+export type UiEvent = { type: 'edit-folder'; id: string } | { type: 'focus-address' } | { type: 'edge-hover' };
 
 export interface OverlayMessage {
   spec: OverlaySpec | null;

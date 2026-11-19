@@ -7,7 +7,7 @@ import { useHoverIntent } from '../lib/useHoverIntent';
 import { NAV_EVENT } from './TopTabBar';
 import { normalizeHost } from '../services/blocking';
 import { jivvy, isElectron, isNative, isTauri, floatsToOverlay, nativeInvoke as invoke, openOverlay } from '../platform';
-import { LAYOUT } from '../../shared/layout';
+import { LAYOUT, chromeInsets } from '../../shared/layout';
 
 function hostOf(url: string) {
   try {
@@ -67,22 +67,21 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
   const inputRef = useRef<HTMLInputElement>(null);
   const shown = floating || !autoHide || ((hovered || focused) && !floatsToOverlay);
   const stripRef = useRef<HTMLDivElement>(null);
-  // Electron base view with auto-hide: the bar never pushes the page down; it floats over it.
+  // Electron base view with auto-hide: the bar reserves no space and never pushes the page down;
+  // main floats it over the page (overlay view) when the top-edge hover strip is entered, or on
+  // Ctrl+L, anchored where the bar would sit.
   const revealOverlay = (focus: boolean) => {
-    const r = stripRef.current?.getBoundingClientRect();
-    if (r) openOverlay({ kind: 'addressbar', anchor: { x: r.left, y: r.top, width: r.width, height: LAYOUT.ADDRESS_BAR_H }, focus });
+    const s = useWorkspaceStore.getState();
+    const left = chromeInsets({ layoutMode: s.layoutMode, showTopBar: s.showTopBar, autoHideAddressBar: s.autoHideAddressBar, zenBarPosition: s.zenBarPosition }).left;
+    const y = s.layoutMode === 'classic-top' ? LAYOUT.TAB_BAR_H : 0;
+    openOverlay({ kind: 'addressbar', anchor: { x: left, y, width: Math.max(1, window.innerWidth - left), height: LAYOUT.ADDRESS_BAR_H }, focus });
   };
-  const stripTimer = useRef(0);
   const stripEnter = () => {
-    if (!floatsToOverlay) return onEnter();
-    window.clearTimeout(stripTimer.current);
-    stripTimer.current = window.setTimeout(() => revealOverlay(false), LAYOUT.HOVER_OPEN_MS);
+    if (!floatsToOverlay) onEnter();
   };
   const stripLeave = () => {
-    if (!floatsToOverlay) return onLeave();
-    window.clearTimeout(stripTimer.current);
+    if (!floatsToOverlay) onLeave();
   };
-  useEffect(() => () => window.clearTimeout(stripTimer.current), []);
   useEffect(() => {
     if (autoFocus) requestAnimationFrame(() => inputRef.current?.focus());
   }, [autoFocus]);
@@ -169,7 +168,7 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
     <div onMouseEnter={stripEnter} onMouseLeave={stripLeave} className="shrink-0">
       {/* Hidden state: a thin hover strip along the top edge. Height switches instantly (no
           animation) so a native pane webview is repositioned once, not every frame. */}
-      {!shown && <div ref={stripRef} className="h-1.5 bg-zinc-900 border-b border-zinc-800 hover:bg-zinc-800" title="Show address bar (Ctrl+L)" />}
+      {!shown && !floatsToOverlay && <div ref={stripRef} className="h-1.5 bg-zinc-900 border-b border-zinc-800 hover:bg-zinc-800" title="Show address bar (Ctrl+L)" />}
     <form onSubmit={submit} className={`h-10 flex items-center gap-1 px-2 bg-zinc-900 border-b border-zinc-800 ${shown ? '' : 'hidden'}`}>
       <NavBtn title="Back" onClick={() => nav('back')}>
         <ArrowLeft className="w-4 h-4" />

@@ -6,14 +6,18 @@ export type LayoutMode = 'left-vertical' | 'compact-rail' | 'classic-top' | 'zen
 export type ZenBarPosition = 'left' | 'top' | 'bottom';
 
 export const LAYOUT = {
-  /** Drag header above everything (Tailwind h-8). */
+  /** The old drag header (h-8). The window has a native title bar and the header drew nothing, so
+   *  no layout reserves it any more; kept only so the Tauri build's header keeps its height. */
   TOP_BAR_H: 32,
   /** Classic top tab strip (h-10). */
   TAB_BAR_H: 40,
   /** Address bar (h-10). */
   ADDRESS_BAR_H: 40,
-  /** Hover strips: hidden address bar, Zen edges (h-1.5 / w-1.5). */
+  /** Hover strips drawn in the base view: Zen edges (h-1.5 / w-1.5). */
   STRIP: 6,
+  /** Invisible hover strip along the top edge (its own view over the page) that floats the
+   *  auto-hidden address bar. Reserves no space. */
+  EDGE_H: 4,
   /** Pinned sidebar (w-64). Also the width of the hover-expanded rail. */
   SIDEBAR_W: 256,
   /** Collapsed compact rail (w-12). */
@@ -59,17 +63,37 @@ export interface Insets {
 
 /** Space the chrome takes on each edge for a layout; the pages get the rest. */
 export function chromeInsets(i: Omit<LayoutInput, 'width' | 'height' | 'split'>): Insets {
-  const addr = i.autoHideAddressBar ? LAYOUT.STRIP : LAYOUT.ADDRESS_BAR_H;
+  // Auto-hidden address bar: nothing is drawn in the base view and no space is reserved; the bar
+  // floats over the page (overlay view), revealed by the top-edge hover strip or Ctrl+L.
+  const addr = i.autoHideAddressBar ? 0 : LAYOUT.ADDRESS_BAR_H;
   if (i.layoutMode === 'zen') {
     if (i.zenBarPosition === 'top') return { top: LAYOUT.STRIP, left: 0, bottom: 0, sidebar: false };
     if (i.zenBarPosition === 'bottom') return { top: 0, left: 0, bottom: LAYOUT.STRIP, sidebar: false };
     return { top: addr, left: LAYOUT.STRIP, bottom: 0, sidebar: true };
   }
-  let top = i.showTopBar ? LAYOUT.TOP_BAR_H : 0;
+  // The top bar (`showTopBar`) is an empty drag header: it draws nothing, so it reserves nothing.
+  // The classic layout's tab strip shows real tabs, so it keeps its space.
+  let top = 0;
   if (i.layoutMode === 'classic-top') top += LAYOUT.TAB_BAR_H;
   top += addr;
   const left = i.layoutMode === 'left-vertical' ? LAYOUT.SIDEBAR_W : i.layoutMode === 'compact-rail' ? LAYOUT.RAIL_W : 0;
   return { top, left, bottom: 0, sidebar: i.layoutMode !== 'classic-top' };
+}
+
+/** Where the address bar sits (window DIPs) when it floats over the page. */
+export function addressBarRect(i: LayoutInput, leftOverride?: number): Rect {
+  const left = Math.round(leftOverride ?? chromeInsets(i).left);
+  const top = i.layoutMode === 'classic-top' ? LAYOUT.TAB_BAR_H : 0;
+  return { x: left, y: top, width: Math.max(1, i.width - left), height: LAYOUT.ADDRESS_BAR_H };
+}
+
+/** The hover strip that reveals the auto-hidden address bar, or null when there is none
+ *  (address bar always shown, or a Zen layout whose bar is not the address bar). */
+export function edgeStripRect(i: LayoutInput): Rect | null {
+  if (!i.autoHideAddressBar) return null;
+  if (i.layoutMode === 'zen' && i.zenBarPosition !== 'left') return null;
+  const r = addressBarRect(i);
+  return { x: r.x, y: r.y, width: r.width, height: LAYOUT.EDGE_H };
 }
 
 /** Widths of the two split panes for a content width (first pane, second pane incl. divider). */

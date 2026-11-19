@@ -90,7 +90,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-zinc-950 text-zinc-100 overflow-hidden">
-      {!isZen && showTopBar && (
+      {!isElectron && !isZen && showTopBar && (
         <header data-tauri-drag-region className="app-drag h-8 bg-zinc-900 border-b border-zinc-800 shrink-0" />
       )}
 

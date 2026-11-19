@@ -12,7 +12,7 @@ import { Blocker } from './blocker';
 import { runSelfTest } from './selftest';
 import { validateAction, INTERNAL_ACTIONS, isAllowedTabUrl, type Action, type PersistedState } from '../shared/state';
 import { CH, HOVER_KINDS, BLUR_KINDS, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent } from '../shared/ipc';
-import { LAYOUT, chromeInsets, cubicBezier, pageRects, type Rect } from '../shared/layout';
+import { LAYOUT, addressBarRect, chromeInsets, cubicBezier, edgeStripRect, pageRects, type Rect } from '../shared/layout';
 
 const log = (...a: unknown[]) => console.error('[jivvy]', ...a);
 
@@ -91,6 +91,8 @@ let win: BaseWindow | null = null;
 let base: WebContentsView | null = null;
 let overlay: WebContentsView | null = null;
 let overlayLoaded = false;
+let edge: WebContentsView | null = null; // invisible top-edge hover strip over the pages
+let edgeAttached = false;
 let store: StateStore;
 let tabs: TabManager;
 let pageSession: Session;
@@ -102,7 +104,7 @@ let pendingPersist: Partial<PersistedState> = {};
 let pendingRuntime = false;
 let flushQueued = false;
 function uiContents(): WebContents[] {
-  return [base, overlay].filter((v): v is WebContentsView => !!v && !v.webContents.isDestroyed()).map((v) => v.webContents);
+  return [base, overlay, edge].filter((v): v is WebContentsView => !!v && !v.webContents.isDestroyed()).map((v) => v.webContents);
 }
 function queueFlush() {
   if (flushQueued) return;
@@ -167,6 +169,37 @@ function applyLayout() {
     if (sec?.attached && rects.secondary) tabs.place(sec, rects.secondary);
   }
   if (overlay && ovAttached) overlay.setBounds(ovRect ?? { x: 0, y: 0, width: li.width, height: li.height });
+  placeEdge(li);
+}
+
+/** The hover strip exists only while the address bar auto-hides; it is hidden while any overlay
+ *  (including the floating address bar itself) is open, and during page fullscreen. */
+function placeEdge(li = layoutInput()) {
+  if (!win) return;
+  const r = runtime.fullscreenTabId || ovAttached ? null : edgeStripRect(li);
+  if (!r) {
+    if (edge && edgeAttached) {
+      win.contentView.removeChildView(edge);
+      edgeAttached = false;
+    }
+    return;
+  }
+  if (!edge) {
+    edge = new WebContentsView({ webPreferences: uiPrefs() });
+    edge.setBackgroundColor('#00000000');
+    guardUi(edge.webContents);
+    loadUi(edge.webContents, '#edge');
+  }
+  edge.setBounds(r);
+  if (!edgeAttached) {
+    win.contentView.addChildView(edge); // top of the stack: above the pages
+    edgeAttached = true;
+  }
+}
+
+/** Float the address bar over the page where it would sit. */
+function openFloatingAddressBar(focus: boolean) {
+  openOverlay({ kind: 'addressbar', anchor: addressBarRect(layoutInput()), focus });
 }
 
 /** Animate the sidebar edge; the base view runs the same CSS transition on its side. */
@@ -307,6 +340,7 @@ function openOverlay(spec: OverlaySpec) {
   ov.setVisible(false);
   if (!ovAttached) win.contentView.addChildView(ov);
   ovAttached = true;
+  placeEdge();
   const { width, height } = win.getContentBounds();
   ov.setBounds({ x: 0, y: 0, width, height });
   ov.webContents.send(CH.overlay, { spec, seq: ovSeq, win: { width, height } });
@@ -337,6 +371,7 @@ function closeOverlay(seq?: number) {
     win.contentView.removeChildView(overlay);
     ovAttached = false;
     overlay.webContents.send(CH.overlay, { spec: null, seq: ++ovSeq, win: win.getContentBounds() });
+    placeEdge();
   }
   if (hadFocus) {
     const p = activeWorkspace()?.primaryTabId;
@@ -581,7 +616,9 @@ function registerIpc() {
   ipcMain.on(CH.emit, (e, ev) => {
     if (!isFromUi(e) || !ev || typeof ev !== 'object') return;
     if (ev.type === 'edit-folder' && shortStr(ev.id, 128)) sendEvent({ type: 'edit-folder', id: ev.id }, e.sender);
-    else if (ev.type === 'focus-address') sendEvent({ type: 'focus-address' }, e.sender);
+    else if (ev.type === 'edge-hover') {
+      if (e.sender === edge?.webContents && !ovAttached) openFloatingAddressBar(false);
+    } else if (ev.type === 'focus-address') sendEvent({ type: 'focus-address' }, e.sender);
   });
   ipcMain.handle(CH.invoke, async (e, cmd, _args) => {
     if (!isFromUi(e) || !shortStr(cmd, 64)) return { ok: false, error: 'Rejected' };
@@ -684,6 +721,8 @@ function createWindow() {
     win = null;
     base = null;
     overlay = null;
+    edge = null;
+    edgeAttached = false;
   });
   reconcile();
 }
@@ -749,6 +788,7 @@ if (!app.requestSingleInstanceLock()) {
         win: () => win!,
         base: () => base!,
         overlay: () => overlay,
+        edge: () => (edgeAttached ? edge : null),
         overlayAttached: () => ovAttached,
         overlayRect: () => ovRect,
         store,

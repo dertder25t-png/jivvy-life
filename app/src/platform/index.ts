@@ -17,7 +17,10 @@ export const isElectron = !!jivvy;
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 /** A native shell is present (pages are native views, blocking etc. available). */
 export const isNative = isElectron || isTauri;
-export const role: 'base' | 'overlay' = typeof location !== 'undefined' && location.hash === '#overlay' ? 'overlay' : 'base';
+export const role: 'base' | 'overlay' | 'edge' =
+  typeof location !== 'undefined' && (location.hash === '#overlay' || location.hash === '#edge') ? (location.hash.slice(1) as 'overlay' | 'edge') : 'base';
+/** Running inside the Electron top-edge hover strip view (reveals the auto-hidden address bar). */
+export const isEdgeRole = isElectron && role === 'edge';
 /** Running inside the Electron overlay view. */
 export const isOverlayRole = isElectron && role === 'overlay';
 /** Electron base view: floating UI must be sent to the overlay view instead of drawn inline. */
