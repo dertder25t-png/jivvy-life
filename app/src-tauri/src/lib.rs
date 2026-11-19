@@ -299,11 +299,12 @@ fn open_path(path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // WebKitGTK's DMA-BUF renderer is behind the GBM/EGL heap-corruption crashes and the
-    // flicker seen on this hybrid Intel Arc + AMD Wayland laptop (Tauri's documented
-    // workaround). Set before GTK/WebKit start. JIVVY_GPU=1 opts back in for testing.
+    // Rendering: keep WebKitGTK's default GPU (DMA-BUF) path. Measured on this machine
+    // (Intel Arc, KDE Wayland, 135% scale): ~60 fps scrolling by default vs ~20 fps with
+    // WEBKIT_DISABLE_DMABUF_RENDERER=1, which made browsing feel like 10 fps. If GPU crashes
+    // return, launch with JIVVY_SAFE_GPU=1 to use the slower shared-memory renderer.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("JIVVY_GPU").is_none() && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+    if std::env::var_os("JIVVY_SAFE_GPU").is_some() {
         // SAFETY: called at startup before any other threads exist.
         unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
     }
