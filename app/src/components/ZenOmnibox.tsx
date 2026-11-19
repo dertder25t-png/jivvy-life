@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { Search, CornerDownLeft } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { setOverlay } from '../lib/overlay';
+import { isElectron, isOverlayRole, openOverlay } from '../platform';
 import { decide, unitCalc, RouteDecision } from '../lib/router';
 
 export const OPEN_OMNIBOX_EVENT = 'lifeapp:omnibox-open';
@@ -87,6 +88,45 @@ const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inpu
 });
 OmniForm.displayName = 'OmniForm';
 
+/** The command palette (Cmd/Ctrl+K). Electron draws it in the overlay view, over the page. */
+export const OmniboxPalette: React.FC<{ open: boolean; onClose: () => void; inputRef?: React.RefObject<HTMLInputElement | null> }> = ({
+  open,
+  onClose,
+  inputRef,
+}) => {
+  const ownRef = useRef<HTMLInputElement | null>(null);
+  const ref = inputRef ?? ownRef;
+  // Keep focus in the palette input whenever it opens.
+  useEffect(() => {
+    if (!open) return;
+    ref.current?.focus();
+    requestAnimationFrame(() => ref.current?.focus());
+  }, [open, ref]);
+  return (
+    <div
+      className={`fixed inset-0 z-50 flex items-start justify-center pt-[14vh] px-4 bg-black/50 transition-opacity duration-150 ${
+        open ? 'opacity-100 backdrop-blur-sm' : 'opacity-0 pointer-events-none invisible'
+      }`}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      aria-hidden={!open}
+    >
+      <div
+        className={`w-full max-w-xl rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl shadow-black/60 p-4 transition-transform duration-150 ${
+          open ? 'translate-y-0 scale-100' : '-translate-y-2 scale-[0.98]'
+        }`}
+      >
+        <OmniForm variant="palette" inputRef={ref} onDone={onClose} />
+        <div className="mt-3 pt-2 border-t border-zinc-800 flex justify-between text-[10px] text-zinc-500">
+          <span>Enter to open · Esc to close</span>
+          <span>⌘/Ctrl + K</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const ZenOmnibox: React.FC = () => {
   const layoutMode = useWorkspaceStore((s) => s.layoutMode);
   const [open, setOpen] = useState(false);
@@ -95,16 +135,19 @@ export const ZenOmnibox: React.FC = () => {
   const close = useCallback(() => setOpen(false), []);
 
   // Cmd/Ctrl+K toggles; Esc closes. Also opened by other components (e.g. the tab strip's "+").
+  // Electron: the palette lives in the overlay view, so this only asks main to open it.
   useEffect(() => {
+    if (isOverlayRole) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setOpen((o) => !o);
+        if (isElectron) openOverlay({ kind: 'omnibox' });
+        else setOpen((o) => !o);
       } else if (e.key === 'Escape') {
         setOpen(false);
       }
     };
-    const onOpen = () => setOpen(true);
+    const onOpen = () => (isElectron ? openOverlay({ kind: 'omnibox' }) : setOpen(true));
     window.addEventListener('keydown', onKey);
     window.addEventListener(OPEN_OMNIBOX_EVENT, onOpen);
     return () => {
@@ -119,35 +162,10 @@ export const ZenOmnibox: React.FC = () => {
     return () => setOverlay('omnibox', false);
   }, [open]);
 
-  // Keep focus in the palette input whenever it opens.
-  useEffect(() => {
-    if (open) requestAnimationFrame(() => inputRef.current?.focus());
-  }, [open]);
-
   return (
     <>
       {/* Command palette: always mounted, toggled with opacity/transform only. */}
-      <div
-        className={`fixed inset-0 z-50 flex items-start justify-center pt-[14vh] px-4 bg-black/50 transition-opacity duration-150 ${
-          open ? 'opacity-100 backdrop-blur-sm' : 'opacity-0 pointer-events-none invisible'
-        }`}
-        onMouseDown={(e) => {
-          if (e.target === e.currentTarget) close();
-        }}
-        aria-hidden={!open}
-      >
-        <div
-          className={`w-full max-w-xl rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl shadow-black/60 p-4 transition-transform duration-150 ${
-            open ? 'translate-y-0 scale-100' : '-translate-y-2 scale-[0.98]'
-          }`}
-        >
-          <OmniForm variant="palette" inputRef={inputRef} onDone={close} />
-          <div className="mt-3 pt-2 border-t border-zinc-800 flex justify-between text-[10px] text-zinc-500">
-            <span>Enter to open · Esc to close</span>
-            <span>⌘/Ctrl + K</span>
-          </div>
-        </div>
-      </div>
+      {!isElectron && <OmniboxPalette open={open} onClose={close} inputRef={inputRef} />}
 
       {/* Zen floating pill. */}
       {layoutMode === 'zen' && (

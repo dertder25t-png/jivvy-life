@@ -7,6 +7,7 @@ import { useWorkspaceStore } from '../store/workspaceStore';
 import { WorkspaceTab } from '../types/workspace';
 import { isOverlayOpen } from '../lib/overlay';
 import { DashboardView } from './Dashboard/DashboardView';
+import { jivvy, isElectron } from '../platform';
 
 const NoteEditor = lazy(() => import('./NoteEditor').then((m) => ({ default: m.NoteEditor })));
 
@@ -42,6 +43,11 @@ function exitFullscreenFor(tabId: string) {
 
 /** Toggle mute for a tab's pane (speaker indicator in the sidebar / top bar). */
 export function togglePaneMute(tabId: string) {
+  if (jivvy) {
+    // Electron: main owns the page; it reports the new muted state back.
+    jivvy.setMuted(tabId, !useWorkspaceStore.getState().audioTabs[tabId]?.muted);
+    return;
+  }
   const label = views.get(tabId)?.wv.label;
   if (!label) return;
   const st = useWorkspaceStore.getState();
@@ -402,6 +408,13 @@ const NativeWebPane: React.FC<{ tab: WorkspaceTab; primary: boolean }> = ({ tab,
   );
 };
 
+/** Electron: the page is a WebContentsView that main places over this exact rect. */
+const ElectronPagePane: React.FC = () => (
+  <div className="flex-1 flex flex-col h-full bg-zinc-950 min-w-0">
+    <div data-page-slot className="flex-1 min-h-0 w-full bg-zinc-950" />
+  </div>
+);
+
 const IframePane: React.FC<{ tab: WorkspaceTab }> = ({ tab }) => (
   <div className="flex-1 flex flex-col h-full bg-zinc-950 min-w-0">
     <iframe
@@ -437,6 +450,7 @@ const SinglePane: React.FC<{ tab?: WorkspaceTab; primary: boolean }> = ({ tab, p
       </div>
     );
   }
+  if (isElectron) return <ElectronPagePane />;
   return isTauri() ? <NativeWebPane key={tab.id} tab={tab} primary={primary} /> : <IframePane tab={tab} />;
 };
 

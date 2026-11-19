@@ -97,6 +97,9 @@ let flushAgain = false;
 let pulling = false;
 let initialised = false;
 let pulledListener: ((s: PulledState) => void) | null = null;
+// Electron: main persists workspaces/notes/layout; this module only does cloud sync bookkeeping.
+let localPersistence = true;
+let layoutModeSource: (() => LayoutMode) | null = null;
 
 const pushed: Pushed = readJson<Pushed>(KEYS.PUSHED, { workspaces: {}, notes: {} });
 const dirty: DirtyQueue = readJson<DirtyQueue>(KEYS.SYNC_QUEUE, { workspaces: [], notes: [], prefs: false });
@@ -118,6 +121,10 @@ function scheduleSync(delay = SYNC_DEBOUNCE_MS) {
 }
 
 function flushLocalWrites() {
+  if (!localPersistence) {
+    wsLocalPending = notesLocalPending = false;
+    return;
+  }
   if (wsLocalPending) {
     window.clearTimeout(wsLocalTimer);
     wsLocalPending = false;
@@ -181,6 +188,12 @@ function resetIfUserChanged() {
 }
 
 export const storageService = {
+  /** Electron: turn off localStorage copies of state that main owns; layout comes from `source`. */
+  setLocalPersistence(enabled: boolean, source: () => LayoutMode) {
+    localPersistence = enabled;
+    layoutModeSource = source;
+  },
+
   /** Store registers to receive merged remote data (pull / realtime-less sync). */
   onPulled(cb: (s: PulledState) => void) {
     pulledListener = cb;
@@ -253,12 +266,13 @@ export const storageService = {
   },
 
   loadLayoutMode(): LayoutMode {
+    if (layoutModeSource) return layoutModeSource();
     const saved = localStorage.getItem(KEYS.LAYOUT) as LayoutMode | null;
     return saved || 'left-vertical';
   },
 
   saveLayoutMode(mode: LayoutMode) {
-    localStorage.setItem(KEYS.LAYOUT, mode);
+    if (localPersistence) localStorage.setItem(KEYS.LAYOUT, mode);
     const meta = readJson<{ updatedAt?: string; sidebarWidth?: number }>(KEYS.PREFS_META, {});
     writeJson(KEYS.PREFS_META, { ...meta, updatedAt: new Date().toISOString() });
     dirtyPrefs = true;
@@ -390,7 +404,7 @@ export const storageService = {
         const d = (res.preferences.data ?? {}) as { layoutMode?: LayoutMode; sidebarWidth?: number };
         if (ts(res.preferences.updatedAt) > ts(meta.updatedAt)) {
           if (d.layoutMode) {
-            localStorage.setItem(KEYS.LAYOUT, d.layoutMode);
+            if (localPersistence) localStorage.setItem(KEYS.LAYOUT, d.layoutMode);
             out.layoutMode = d.layoutMode;
           }
           writeJson(KEYS.PREFS_META, {

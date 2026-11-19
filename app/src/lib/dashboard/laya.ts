@@ -1,7 +1,8 @@
 // laya = local OpenVINO "vega" reader (helper/laya_server.py on 127.0.0.1:8770).
 // Calls go through Rust (laya_classify / laya_health) which does the TCP call with a 1.5 s timeout.
+// The Electron build answers both with null for now (laya returns in Phase 2).
 // POST /decide {text} -> {ok, p_ai, ms};  GET /health -> {ok, ready, device, infer_device, ...}
-import { invoke } from '@tauri-apps/api/core';
+import { nativeInvoke as invoke } from '../../platform';
 
 export interface LayaOut {
   ok: boolean;

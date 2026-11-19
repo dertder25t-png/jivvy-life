@@ -7,6 +7,8 @@ import { WorkspaceTab, TabFolder } from '../types/workspace';
 import { HamburgerMenu } from './HamburgerMenu';
 import { ConfirmDialog } from './ConfirmDialog';
 import { setOverlay } from '../lib/overlay';
+import { floatsToOverlay, isElectron, isOverlayRole, jivvy, openOverlay, portalTarget, viewport } from '../platform';
+import { LAYOUT, EASE_CSS } from '../../shared/layout';
 
 const DRAG_MIME = 'application/x-lifeapp-tab';
 
@@ -209,7 +211,115 @@ interface CtxMenu {
   y: number;
 }
 
-export const Sidebar: React.FC = () => {
+const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-zinc-300 hover:bg-zinc-800';
+
+/** Right-click menu for a tab. Inline (Tauri / inside an overlay surface) or the overlay's popup. */
+export const TabContextMenu: React.FC<{
+  tabId: string;
+  x: number;
+  y: number;
+  onClose: () => void;
+  onEditFolder: (id: string) => void;
+}> = ({ tabId, x, y, onClose, onEditFolder }) => {
+  const ctxTab = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.tabs.find((t) => t.id === tabId));
+  const showFolders = useWorkspaceStore((s) => s.showFolders);
+  const allFolders = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.folders);
+  const folders = showFolders ? allFolders ?? [] : [];
+  const { togglePin, focusTab, moveTabToFolder, createFolder, closeTab } = useWorkspaceStore.getState();
+  if (!ctxTab) return null;
+  const vp = viewport();
+  return (
+    <div
+      style={{ left: Math.min(x, vp.width - 200), top: Math.min(y, vp.height - 280) }}
+      className="fixed z-[61] w-48 py-1 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl shadow-black/50"
+    >
+      <button
+        className={menuItem}
+        onClick={() => {
+          togglePin(ctxTab.id);
+          onClose();
+        }}
+      >
+        <Pin className="w-3.5 h-3.5" /> {ctxTab.pinned ? 'Unpin tab' : 'Pin tab'}
+      </button>
+      <button
+        className={menuItem}
+        onClick={() => {
+          focusTab(ctxTab.id, 'secondary');
+          onClose();
+        }}
+      >
+        <Columns2 className="w-3.5 h-3.5" /> Open in split pane
+      </button>
+      <div className="my-1 border-t border-zinc-800" />
+      <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500 flex items-center gap-1.5">
+        <FolderInput className="w-3 h-3" /> Move to folder
+      </div>
+      {ctxTab.folderId && (
+        <button
+          className={menuItem}
+          onClick={() => {
+            moveTabToFolder(ctxTab.id, null);
+            onClose();
+          }}
+        >
+          No folder
+        </button>
+      )}
+      {folders
+        .filter((f) => f.id !== ctxTab.folderId)
+        .map((f) => (
+          <button
+            key={f.id}
+            className={menuItem}
+            onClick={() => {
+              moveTabToFolder(ctxTab.id, f.id);
+              onClose();
+            }}
+          >
+            <Folder className="w-3.5 h-3.5 text-zinc-500" /> <span className="truncate">{f.name}</span>
+          </button>
+        ))}
+      <button
+        className={menuItem}
+        onClick={() => {
+          const id = createFolder('New folder');
+          moveTabToFolder(ctxTab.id, id);
+          onEditFolder(id);
+          onClose();
+        }}
+      >
+        <FolderPlus className="w-3.5 h-3.5 text-zinc-500" /> New folder…
+      </button>
+      {ctxTab.type !== 'dashboard' && (
+        <>
+          <div className="my-1 border-t border-zinc-800" />
+          <button
+            className={`${menuItem} !text-red-400`}
+            onClick={() => {
+              closeTab(ctxTab.id);
+              onClose();
+            }}
+          >
+            <X className="w-3.5 h-3.5" /> Close tab
+          </button>
+        </>
+      )}
+    </div>
+  );
+};
+
+const FOLDER_DELETE = {
+  title: 'Delete folder?',
+  body: 'The folder is removed. Its tabs stay open and move back to the main list.',
+  confirmLabel: 'Delete folder',
+};
+
+/**
+ * The tab sidebar. `floating` is the Electron overlay copy: the compact rail / Zen rail expanded
+ * over the page (the base view keeps the collapsed rail underneath).
+ */
+export const Sidebar: React.FC<{ floating?: boolean; onLeave?: () => void; onEnter?: () => void }> = ({ floating = false, onLeave, onEnter }) => {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
@@ -233,18 +343,30 @@ export const Sidebar: React.FC = () => {
 
   const activeWs = workspaces.find((w) => w.id === activeWorkspaceId) || workspaces[0];
   const isZenLeft = layoutMode === 'zen';
-  const compact = layoutMode === 'compact-rail' || isZenLeft;
+  // The floating overlay copy is always the expanded rail: full rows, labels visible.
+  const compact = !floating && (layoutMode === 'compact-rail' || isZenLeft);
   const lbl = compact ? 'transition-opacity duration-150 opacity-0 group-hover/rail:opacity-100' : '';
 
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const emitRail = useCallback(
     (expanded: boolean) =>
-      window.dispatchEvent(new CustomEvent('lifeapp:rail', { detail: { expanded, width: 256 } })),
+      window.dispatchEvent(new CustomEvent('lifeapp:rail', { detail: { expanded, width: LAYOUT.SIDEBAR_W } })),
     []
   );
   const railTimer = useRef<number | null>(null);
   const railIntent = useCallback(
     (expanded: boolean) => {
       if (railTimer.current !== null) window.clearTimeout(railTimer.current);
+      railTimer.current = null;
+      if (floatsToOverlay) {
+        // Electron: after a short hover, the expanded rail floats over the page in the overlay view.
+        if (!expanded) return;
+        railTimer.current = window.setTimeout(() => {
+          const r = wrapperRef.current?.getBoundingClientRect();
+          if (r) openOverlay({ kind: 'rail', anchor: { x: r.left, y: r.top, width: r.width, height: r.height } });
+        }, LAYOUT.RAIL_OPEN_MS);
+        return;
+      }
       railTimer.current = window.setTimeout(() => emitRail(expanded), expanded ? 180 : 250);
     },
     [emitRail]
@@ -253,6 +375,7 @@ export const Sidebar: React.FC = () => {
 
   // Always reset rail state when mode changes OR when Sidebar unmounts (prevents Compact -> Zen 256px stuck bug)
   useEffect(() => {
+    if (isElectron) return;
     if (railTimer.current !== null) window.clearTimeout(railTimer.current);
     if (!compact) emitRail(false);
     return () => { emitRail(false); };
@@ -262,6 +385,17 @@ export const Sidebar: React.FC = () => {
     setOverlay('tabmenu', !!ctx);
     return () => { setOverlay('tabmenu', false); };
   }, [ctx]);
+
+  // "New folder…" picked in the overlay's tab menu: start renaming it here.
+  useEffect(() => {
+    if (!isElectron) return;
+    const onUi = (e: Event) => {
+      const ev = (e as CustomEvent<{ type: string; id?: string }>).detail;
+      if (ev?.type === 'edit-folder' && ev.id) setEditingFolder(ev.id);
+    };
+    window.addEventListener('jivvy:ui', onUi);
+    return () => window.removeEventListener('jivvy:ui', onUi);
+  }, []);
 
   const folders = useMemo(() => (showFolders ? activeWs?.folders ?? [] : []), [activeWs, showFolders]);
   const { rootTabs, byFolder } = useMemo(() => {
@@ -284,8 +418,19 @@ export const Sidebar: React.FC = () => {
 
   const onFocus = useCallback((id: string) => focusTab(id), [focusTab]);
   const onClose = useCallback((id: string) => closeTab(id), [closeTab]);
-  const onMenu = useCallback((tabId: string, x: number, y: number) => setCtx({ tabId, x, y }), []);
+  const onMenu = useCallback((tabId: string, x: number, y: number) => {
+    if (floatsToOverlay) openOverlay({ kind: 'tabmenu', tabId, x, y });
+    else setCtx({ tabId, x, y });
+  }, []);
   const onDropTab = useCallback((tabId: string, folderId: string) => moveTabToFolder(tabId, folderId), [moveTabToFolder]);
+  const askDeleteFolder = useCallback((id: string) => {
+    if (isElectron) openOverlay({ kind: 'confirm', ...FOLDER_DELETE, action: { type: 'deleteFolder', folderId: id } });
+    else setFolderToDelete(id);
+  }, []);
+  const editFolder = useCallback((id: string) => {
+    if (isOverlayRole) jivvy?.emit({ type: 'edit-folder', id });
+    setEditingFolder(id);
+  }, []);
 
   const newFolder = () => {
     if (!showFolders) setShowFolders(true);
@@ -307,26 +452,36 @@ export const Sidebar: React.FC = () => {
     />
   );
 
-  const ctxTab = ctx ? activeWs?.tabs.find((t) => t.id === ctx.tabId) : undefined;
-  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-zinc-300 hover:bg-zinc-800';
-
-  const wrapperClass = isZenLeft
-    ? 'rail-zen-wrap relative w-1.5 shrink-0 h-full bg-zinc-950 hover:bg-indigo-500/30 transition-colors'
+  // Electron base view: the collapsed rail never expands in place (the page sits right next to
+  // it); hovering it opens the floating copy in the overlay view instead.
+  const railClass = floatsToOverlay ? 'rail-static' : 'rail-collapsed';
+  const wrapperClass = floating
+    ? 'relative h-full'
+    : isZenLeft
+    ? `${floatsToOverlay ? '' : 'rail-zen-wrap '}relative w-1.5 shrink-0 h-full bg-zinc-950 hover:bg-indigo-500/30 transition-colors`
     : compact
     ? 'relative w-12 shrink-0 h-full'
     : 'relative w-64 shrink-0 h-full';
 
-  const asideClass = isZenLeft
-    ? 'rail-zen absolute inset-y-0 left-0 z-30'
+  const asideClass = floating
+    ? `rail-float ${isZenLeft ? 'rail-float-zen' : ''}`
+    : isZenLeft
+    ? `${floatsToOverlay ? 'rail-static-zen' : 'rail-zen'} absolute inset-y-0 left-0 z-30`
     : compact
-    ? 'rail-collapsed absolute inset-y-0 left-0 z-30'
+    ? `${railClass} absolute inset-y-0 left-0 z-30`
     : '';
+
+  // Electron: the sidebar edge animates between pinned and rail widths; main moves the page in step.
+  const wrapperStyle: React.CSSProperties | undefined =
+    isElectron && !floating ? { transition: `width ${LAYOUT.ANIM_MS}ms ${EASE_CSS}` } : undefined;
 
   return (
     <div
+      ref={wrapperRef}
       className={wrapperClass}
-      onMouseEnter={compact ? () => railIntent(true) : undefined}
-      onMouseLeave={compact ? () => railIntent(false) : undefined}
+      style={wrapperStyle}
+      onMouseEnter={floating ? onEnter : compact ? () => railIntent(true) : undefined}
+      onMouseLeave={floating ? onLeave : compact ? () => railIntent(false) : undefined}
     >
       <aside className={`group/rail h-full w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col select-none ${asideClass}`}>
         {workspaces.length > 1 && (
@@ -401,7 +556,7 @@ export const Sidebar: React.FC = () => {
                   onToggle={toggleFolder}
                   onStartRename={setEditingFolder}
                   onRename={renameFolder}
-                  onDelete={setFolderToDelete}
+                  onDelete={askDeleteFolder}
                   onDropTab={onDropTab}
                 />
                 {!f.collapsed && byFolder.get(f.id)?.map((t) => renderRow(t, true))}
@@ -415,96 +570,19 @@ export const Sidebar: React.FC = () => {
       </aside>
 
       {ctx &&
-        ctxTab &&
         createPortal(
           <>
             <div className="fixed inset-0 z-[60]" onMouseDown={() => setCtx(null)} onContextMenu={(e) => (e.preventDefault(), setCtx(null))} />
-            <div
-              style={{ left: Math.min(ctx.x, window.innerWidth - 200), top: Math.min(ctx.y, window.innerHeight - 280) }}
-              className="fixed z-[61] w-48 py-1 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl shadow-black/50"
-            >
-              <button
-                className={menuItem}
-                onClick={() => {
-                  togglePin(ctxTab.id);
-                  setCtx(null);
-                }}
-              >
-                <Pin className="w-3.5 h-3.5" /> {ctxTab.pinned ? 'Unpin tab' : 'Pin tab'}
-              </button>
-              <button
-                className={menuItem}
-                onClick={() => {
-                  focusTab(ctxTab.id, 'secondary');
-                  setCtx(null);
-                }}
-              >
-                <Columns2 className="w-3.5 h-3.5" /> Open in split pane
-              </button>
-              <div className="my-1 border-t border-zinc-800" />
-              <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500 flex items-center gap-1.5">
-                <FolderInput className="w-3 h-3" /> Move to folder
-              </div>
-              {ctxTab.folderId && (
-                <button
-                  className={menuItem}
-                  onClick={() => {
-                    moveTabToFolder(ctxTab.id, null);
-                    setCtx(null);
-                  }}
-                >
-                  No folder
-                </button>
-              )}
-              {folders
-                .filter((f) => f.id !== ctxTab.folderId)
-                .map((f) => (
-                  <button
-                    key={f.id}
-                    className={menuItem}
-                    onClick={() => {
-                      moveTabToFolder(ctxTab.id, f.id);
-                      setCtx(null);
-                    }}
-                  >
-                    <Folder className="w-3.5 h-3.5 text-zinc-500" /> <span className="truncate">{f.name}</span>
-                  </button>
-                ))}
-              <button
-                className={menuItem}
-                onClick={() => {
-                  const id = createFolder('New folder');
-                  moveTabToFolder(ctxTab.id, id);
-                  setEditingFolder(id);
-                  setCtx(null);
-                }}
-              >
-                <FolderPlus className="w-3.5 h-3.5 text-zinc-500" /> New folder…
-              </button>
-              {ctxTab.type !== 'dashboard' && (
-                <>
-                  <div className="my-1 border-t border-zinc-800" />
-                  <button
-                    className={`${menuItem} !text-red-400`}
-                    onClick={() => {
-                      closeTab(ctxTab.id);
-                      setCtx(null);
-                    }}
-                  >
-                    <X className="w-3.5 h-3.5" /> Close tab
-                  </button>
-                </>
-              )}
-            </div>
+            <TabContextMenu tabId={ctx.tabId} x={ctx.x} y={ctx.y} onClose={() => setCtx(null)} onEditFolder={editFolder} />
           </>,
-          document.body
+          portalTarget()
         )}
 
       {folderToDelete && (
         <ConfirmDialog
-          title="Delete folder?"
-          body="The folder is removed. Its tabs stay open and move back to the main list."
-          confirmLabel="Delete folder"
+          title={FOLDER_DELETE.title}
+          body={FOLDER_DELETE.body}
+          confirmLabel={FOLDER_DELETE.confirmLabel}
           onCancel={() => setFolderToDelete(null)}
           onConfirm={() => {
             deleteFolder(folderToDelete);

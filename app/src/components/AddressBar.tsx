@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, RotateCw, Search, KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { decide } from '../lib/router';
 import { setOverlay } from '../lib/overlay';
 import { useHoverIntent } from '../lib/useHoverIntent';
 import { NAV_EVENT } from './TopTabBar';
-import { normalizeHost, inTauri } from '../services/blocking';
+import { normalizeHost } from '../services/blocking';
+import { jivvy, isElectron, isNative, isTauri, floatsToOverlay, nativeInvoke as invoke, openOverlay } from '../platform';
+import { LAYOUT } from '../../shared/layout';
 
 function hostOf(url: string) {
   try {
@@ -22,8 +23,11 @@ const NavBtn: React.FC<{ title: string; onClick: () => void; children: React.Rea
   </button>
 );
 
-/** The one address bar: shows the active tab's URL; Enter navigates it (or opens a new tab). */
-export const AddressBar: React.FC = React.memo(() => {
+/**
+ * The one address bar: shows the active tab's URL; Enter navigates it (or opens a new tab).
+ * `floating`: the Electron overlay copy, revealed over the page from the auto-hide strip.
+ */
+export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> = React.memo(({ floating = false, autoFocus = false }) => {
   const activeUrl = useWorkspaceStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.tabs.find((t) => t.id === ws.primaryTabId)?.url ?? '';
@@ -61,26 +65,57 @@ export const AddressBar: React.FC = React.memo(() => {
   const [value, setValue] = useState(activeUrl);
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const shown = !autoHide || hovered || focused;
+  const shown = floating || !autoHide || ((hovered || focused) && !floatsToOverlay);
+  const stripRef = useRef<HTMLDivElement>(null);
+  // Electron base view with auto-hide: the bar never pushes the page down; it floats over it.
+  const revealOverlay = (focus: boolean) => {
+    const r = stripRef.current?.getBoundingClientRect();
+    if (r) openOverlay({ kind: 'addressbar', anchor: { x: r.left, y: r.top, width: r.width, height: LAYOUT.ADDRESS_BAR_H }, focus });
+  };
+  const stripTimer = useRef(0);
+  const stripEnter = () => {
+    if (!floatsToOverlay) return onEnter();
+    window.clearTimeout(stripTimer.current);
+    stripTimer.current = window.setTimeout(() => revealOverlay(false), LAYOUT.HOVER_OPEN_MS);
+  };
+  const stripLeave = () => {
+    if (!floatsToOverlay) return onLeave();
+    window.clearTimeout(stripTimer.current);
+  };
+  useEffect(() => () => window.clearTimeout(stripTimer.current), []);
+  useEffect(() => {
+    if (autoFocus) requestAnimationFrame(() => inputRef.current?.focus());
+  }, [autoFocus]);
 
   // Ctrl/Cmd+L reveals and focuses the address bar, like a browser.
   useEffect(() => {
+    const focusAddress = () => {
+      if (floatsToOverlay && autoHide) return revealOverlay(true);
+      setHovered(true);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    };
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'l') {
         e.preventDefault();
-        setHovered(true);
-        requestAnimationFrame(() => inputRef.current?.focus());
+        focusAddress();
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [setHovered]);
+    // Electron: Ctrl+L pressed inside a web page arrives from main as a UI event.
+    const onUi = (e: Event) => (e as CustomEvent<{ type: string }>).detail?.type === 'focus-address' && focusAddress();
+    if (!floating) window.addEventListener('keydown', onKey);
+    if (!floating && isElectron) window.addEventListener('jivvy:ui', onUi);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('jivvy:ui', onUi);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setHovered, floating, autoHide]);
 
   // Offer a key button when saved logins exist for the active web tab's origin (Tauri only).
   useEffect(() => {
     setPickOpen(false);
     setLogins([]);
-    if (!('__TAURI_INTERNALS__' in window) || activeType !== 'web' || !activeHost) return;
+    if (!isTauri || activeType !== 'web' || !activeHost) return;
     let live = true;
     invoke<string[]>('logins_for', { origin: activeUrlRef.current })
       .then((l) => live && setLogins(l))
@@ -120,17 +155,21 @@ export const AddressBar: React.FC = React.memo(() => {
   };
 
   const nav = (action: 'back' | 'forward' | 'reload') => {
+    if (jivvy) {
+      if (activeTabId) jivvy.tabNav(activeTabId, action);
+      return;
+    }
     window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: { action } }));
-    if (action !== 'reload' || '__TAURI_INTERNALS__' in window) return;
+    if (action !== 'reload' || isTauri) return;
     const frame = document.querySelector<HTMLIFrameElement>('iframe');
     if (frame) frame.src = frame.src;
   };
 
   return (
-    <div onMouseEnter={onEnter} onMouseLeave={onLeave} className="shrink-0">
+    <div onMouseEnter={stripEnter} onMouseLeave={stripLeave} className="shrink-0">
       {/* Hidden state: a thin hover strip along the top edge. Height switches instantly (no
           animation) so a native pane webview is repositioned once, not every frame. */}
-      {!shown && <div className="h-1.5 bg-zinc-900 border-b border-zinc-800 hover:bg-zinc-800" title="Show address bar (Ctrl+L)" />}
+      {!shown && <div ref={stripRef} className="h-1.5 bg-zinc-900 border-b border-zinc-800 hover:bg-zinc-800" title="Show address bar (Ctrl+L)" />}
     <form onSubmit={submit} className={`h-10 flex items-center gap-1 px-2 bg-zinc-900 border-b border-zinc-800 ${shown ? '' : 'hidden'}`}>
       <NavBtn title="Back" onClick={() => nav('back')}>
         <ArrowLeft className="w-4 h-4" />
@@ -162,7 +201,7 @@ export const AddressBar: React.FC = React.memo(() => {
         />
         {decision && value.trim() && <span className="text-[10px] text-zinc-500 shrink-0">{decision.label}</span>}
       </div>
-      {inTauri() && activeType === 'web' && siteHost && blockingEnabled && (
+      {isNative && activeType === 'web' && siteHost && blockingEnabled && (
         <button
           type="button"
           onClick={toggleSiteBlocking}

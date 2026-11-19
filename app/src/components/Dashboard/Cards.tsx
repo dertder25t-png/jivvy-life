@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { nativeInvoke as invoke } from '../../platform';
 import { Play, Pause, RotateCcw, X, Plus, Pencil, Check } from 'lucide-react';
 import { usePersisted } from '../../lib/dashboard/store';
 

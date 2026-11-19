@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { X, Database } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { nativeInvoke as invoke, isTauri, isNative } from '../platform';
 import { getVersion } from '@tauri-apps/api/app';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -50,7 +50,7 @@ export const SettingsModal: React.FC = () => {
     setSiteInput('');
     if (!blockingDisabledSites.includes(h)) setBlockingDisabledSites([...blockingDisabledSites, h]);
   };
-  const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const inTauri = isTauri;
   const [installKind, setInstallKind] = useState<'appimage' | 'native' | ''>('');
   const [appVersion, setAppVersion] = useState('');
   const [update, setUpdate] = useState<Update | null>(null);
@@ -103,7 +103,7 @@ export const SettingsModal: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsModalOpen]);
   useEffect(() => {
-    if (!settingsModalOpen || !inTauri) return;
+    if (!settingsModalOpen || !isNative) return;
     let live = true;
     const poll = () =>
       invoke<{ ready: boolean; rules: number; enabled: boolean }>('blocking_status')
@@ -272,7 +272,7 @@ export const SettingsModal: React.FC = () => {
           </div>
         )}
 
-        {inTauri && (
+        {isNative && (
           <div className="space-y-2 border-t border-zinc-800 pt-3">
             <h4 className="text-xs font-semibold text-zinc-200">Privacy</h4>
             <Toggle label="Block ads & trackers" checked={blockingEnabled} onChange={setBlockingEnabled} />
@@ -314,7 +314,7 @@ export const SettingsModal: React.FC = () => {
           </div>
         )}
 
-        {inTauri && (
+        {isNative && (
           <div className="space-y-2 border-t border-zinc-800 pt-3">
             <h4 className="text-xs font-semibold text-zinc-200">Logins</h4>
             <button

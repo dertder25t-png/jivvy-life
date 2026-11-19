@@ -5,6 +5,7 @@ import { togglePaneMute } from './PaneContainer';
 import { WorkspaceTab } from '../types/workspace';
 import { OPEN_OMNIBOX_EVENT } from './ZenOmnibox';
 import { HamburgerMenu } from './HamburgerMenu';
+import { isElectron, openOverlay } from '../platform';
 
 export const NAV_EVENT = 'lifeapp:nav';
 
@@ -111,7 +112,7 @@ export const TopTabBar: React.FC = () => {
       </div>
 
       <button
-        onClick={() => window.dispatchEvent(new Event(OPEN_OMNIBOX_EVENT))}
+        onClick={() => (isElectron ? openOverlay({ kind: 'omnibox' }) : window.dispatchEvent(new Event(OPEN_OMNIBOX_EVENT)))}
         title="New tab (Cmd/Ctrl+K)"
         className="self-center p-1.5 mb-0.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors shrink-0"
       >

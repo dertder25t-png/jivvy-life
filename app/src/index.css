@@ -85,3 +85,64 @@
   background: #27272a;
   border-radius: 6px;
 }
+
+/* ---- Electron ------------------------------------------------------------------------------ */
+/* Window drag region (Tauri used data-tauri-drag-region). */
+html.electron .app-drag {
+  -webkit-app-region: drag;
+}
+/* The overlay view is transparent: only what it draws covers the page. */
+html.overlay,
+html.overlay body {
+  background: transparent !important;
+}
+/* Base view: the compact / Zen rail stays collapsed; hovering opens the floating copy over the
+   page in the overlay view instead of expanding in place. */
+.rail-static {
+  clip-path: inset(0 calc(100% - 48px) 0 0);
+}
+.rail-static .rail-item {
+  width: 32px;
+  padding-left: 8px;
+  padding-right: 0;
+  overflow: hidden;
+}
+.rail-static-zen {
+  clip-path: inset(0 100% 0 0);
+}
+/* Overlay copy of the rail: same reveal as the in-place clip-path transition. */
+.rail-float {
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+  animation: rail-reveal 200ms ease-out;
+}
+.rail-float-zen {
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.55);
+  animation: rail-reveal-zen 160ms ease-out;
+}
+@keyframes rail-reveal {
+  from { clip-path: inset(0 calc(100% - 48px) 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+@keyframes rail-reveal-zen {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+/* Scrollbars: WebKitGTK draws thin GTK overlay-style bars; match them instead of Chromium's
+   wide grey default. */
+html.electron ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+html.electron ::-webkit-scrollbar-track,
+html.electron ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+html.electron ::-webkit-scrollbar-thumb {
+  background: rgba(161, 161, 170, 0.3);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html.electron ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(161, 161, 170, 0.5);
+}

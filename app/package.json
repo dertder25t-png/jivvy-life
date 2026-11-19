@@ -9,7 +9,13 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "app:dev": "tauri dev",
-    "app:install": "bash scripts/install.sh"
+    "app:install": "bash scripts/install.sh",
+    "electron:typecheck": "tsc -p electron",
+    "electron:compile": "npm run electron:typecheck && node scripts/build-electron.mjs",
+    "electron:build": "npm run build && npm run electron:compile",
+    "electron:start": "electron --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations .",
+    "electron:dev": "node scripts/build-electron.mjs && node scripts/electron-dev.mjs",
+    "electron:selftest": "JIVVY_SELFTEST=1 electron --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations . --user-data-dir=${JIVVY_TEST_PROFILE:-/tmp/jivvy-selftest-profile}"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
@@ -34,9 +40,12 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "electron": "45.4.1",
+    "esbuild": "0.25.12",
     "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
-  }
+  },
+  "main": "dist-electron/main.js"
 }
