@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Transition, Visit } from '../shared/history-types';
+import type { Transition, TypedInput, Visit } from '../shared/history-types';
 import type { HistoryHit, ImportStatus } from '../shared/ipc';
 
 const log = (...a: unknown[]) => console.error('[history]', ...a);
@@ -386,6 +386,22 @@ export class HistoryStore {
         return n;
       },
       0
+    );
+  }
+
+  /** Everything the nightly trainer needs: visits and typed inputs since `sinceT` (epoch ms), oldest first. */
+  trainingData(sinceT: number): { visits: Visit[]; typed: TypedInput[] } {
+    return this.guard(
+      'training data',
+      (db) => ({
+        visits: (db.prepare('SELECT url, host, path, title, t, transition, query, engine, dwell_ms FROM visits WHERE t >= ? ORDER BY t').all(sinceT) as Array<Record<string, unknown>>).map(rowToVisit),
+        typed: (db.prepare('SELECT text, url, shown_url, accepted, t FROM typed_inputs WHERE t >= ? ORDER BY t').all(sinceT) as Array<Record<string, unknown>>).map((r) => {
+          const ti: TypedInput = { text: String(r.text), url: String(r.url ?? ''), accepted: Number(r.accepted) === 1, t: Number(r.t) };
+          if (r.shown_url) ti.shownUrl = String(r.shown_url);
+          return ti;
+        }),
+      }),
+      { visits: [], typed: [] }
     );
   }
 

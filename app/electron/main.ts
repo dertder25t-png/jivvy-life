@@ -10,11 +10,12 @@ import { StateStore } from './store';
 import { TabManager } from './tabs';
 import { Blocker } from './blocker';
 import { HistoryStore } from './history';
+import { Trainer } from './trainer';
 import { runSelfTest } from './selftest';
 import { Logins } from './logins';
 import { readBrief, openPath } from './native';
 import { validateAction, INTERNAL_ACTIONS, isAllowedTabUrl, type Action, type PersistedState } from '../shared/state';
-import { CH, HOVER_KINDS, BLUR_KINDS, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent } from '../shared/ipc';
+import { CH, HOVER_KINDS, BLUR_KINDS, type SuggestItem, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent } from '../shared/ipc';
 import { LAYOUT, addressBarRect, chromeInsets, cubicBezier, edgeStripRect, pageRects, type Rect } from '../shared/layout';
 
 const log = (...a: unknown[]) => console.error('[jivvy]', ...a);
@@ -99,6 +100,7 @@ let edgeAttached = false;
 let store: StateStore;
 let tabs: TabManager;
 let history: HistoryStore;
+let trainer: Trainer;
 let logins: Logins;
 let pageSession: Session;
 const blocker = new Blocker();
@@ -335,6 +337,15 @@ function openOverlay(spec: OverlaySpec) {
   createOverlay();
   // A click on the menu button while its menu is open: the blur already closed it, don't reopen.
   if (lastBlurClose.kind === spec.kind && Date.now() - lastBlurClose.at < 300 && !HOVER_KINDS.includes(spec.kind)) return;
+  // Suggestion list updates (every keystroke) redraw in place: no hide/re-show, same seq.
+  if (spec.kind === 'suggest' && ovSpec?.kind === 'suggest' && ovAttached) {
+    ovSpec = spec;
+    runtime.overlay = spec;
+    runtimeChanged();
+    const { width, height } = win.getContentBounds();
+    overlay!.webContents.send(CH.overlay, { spec, seq: ovSeq, win: { width, height } });
+    return;
+  }
   ovSpec = spec;
   ovSeq++;
   ovRect = null;
@@ -562,6 +573,15 @@ function validSpec(s: unknown): OverlaySpec | null {
       return isRect(o.anchor) && (o.position === 'top' || o.position === 'bottom') ? { kind: 'zenbar', position: o.position, anchor: o.anchor } : null;
     case 'addressbar':
       return isRect(o.anchor) ? { kind: 'addressbar', anchor: o.anchor, focus: o.focus === true } : null;
+    case 'suggest': {
+      if (!isRect(o.anchor) || !Array.isArray(o.items) || o.items.length > 8 || !Number.isInteger(o.selected)) return null;
+      const items: SuggestItem[] = [];
+      for (const it of o.items as Array<Record<string, unknown>>) {
+        if (!it || typeof it.url !== 'string' || it.url.length > 2048 || !shortStr(it.title, 300) || !shortStr(it.host, 253)) return null;
+        items.push({ url: it.url, title: it.title, host: it.host });
+      }
+      return { kind: 'suggest', anchor: o.anchor, items, selected: o.selected as number };
+    }
     default:
       return null;
   }
@@ -634,9 +654,18 @@ function registerIpc() {
   });
   ipcMain.handle(CH.historyClear, (e, range) => {
     if (!isFromUi(e) || !(range === 'hour' || range === 'day' || range === 'all')) return 0;
-    return history.clear(range);
+    const n = history.clear(range);
+    void trainer.train(); // predictions.json must not keep sites the user just erased
+    return n;
   });
-  ipcMain.handle(CH.historyImportFirefox, (e) => (isFromUi(e) ? history.importFirefox() : { state: 'error', imported: 0, skipped: 0, error: 'Rejected' }));
+  ipcMain.handle(CH.historyImportFirefox, async (e) => {
+    if (!isFromUi(e)) return { state: 'error', imported: 0, skipped: 0, error: 'Rejected' };
+    const st = await history.importFirefox();
+    if (st.state === 'done') void trainer.train();
+    return st;
+  });
+  ipcMain.handle(CH.predictions, (e) => (isFromUi(e) ? trainer.snapshot : null));
+  ipcMain.handle(CH.predictionsTrain, (e) => (isFromUi(e) ? trainer.train() : null));
   ipcMain.handle(CH.historyImportStatus, (e) => (isFromUi(e) ? history.importStatus() : { state: 'idle', imported: 0, skipped: 0 }));
   ipcMain.on(CH.setMuted, (e, tabId, muted) => {
     if (isFromUi(e) && shortStr(tabId, 128) && typeof muted === 'boolean') tabs.setMuted(tabId, muted);
@@ -658,6 +687,7 @@ function registerIpc() {
     else if (ev.type === 'edge-hover') {
       if (e.sender === edge?.webContents && !ovAttached) openFloatingAddressBar(false);
     } else if (ev.type === 'focus-address') sendEvent({ type: 'focus-address' }, e.sender);
+    else if (ev.type === 'suggest-pick' && Number.isInteger(ev.index) && ev.index >= 0 && ev.index < 8) sendEvent({ type: 'suggest-pick', index: ev.index }, e.sender);
   });
   ipcMain.handle(CH.invoke, async (e, cmd, rawArgs) => {
     if (!isFromUi(e) || !shortStr(cmd, 64)) return { ok: false, error: 'Rejected' };
@@ -804,6 +834,12 @@ if (!app.requestSingleInstanceLock()) {
     store = new StateStore(app.getPath('userData'));
     store.onChange(onStoreChange);
     history = new HistoryStore(app.getPath('userData'), () => store.state.saveHistory);
+    trainer = new Trainer(app.getPath('userData'), history, (snap) => {
+      for (const wc of uiContents()) wc.send(CH.predictionsUpdated, snap);
+    });
+    trainer.load();
+    // The self-test trains on demand against its scratch profile; no background schedule there.
+    if (!SELFTEST && !SNAPSHOT) trainer.start();
     logins = new Logins({ userData: app.getPath('userData'), session: () => pageSession, webContentsOf: (id) => tabs.webContentsOf(id) });
     setupUiSession();
     setupPageSession();
@@ -839,6 +875,7 @@ if (!app.requestSingleInstanceLock()) {
         runtime,
         blocker,
         history,
+        trainer,
         layoutInput,
         snapshotOnly: SNAPSHOT && !SELFTEST,
       });
@@ -846,6 +883,7 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.on('before-quit', () => {
     store?.flushSync();
+    trainer?.stop();
     history?.close();
   });
   app.on('window-all-closed', () => app.quit());

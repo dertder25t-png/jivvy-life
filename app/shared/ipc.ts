@@ -3,7 +3,7 @@
 
 import type { Action, PersistedState } from './state';
 import type { Rect } from './layout';
-import type { TypedInput, Visit } from './history-types';
+import type { PredictionSnapshot, TypedInput, Visit } from './history-types';
 
 export interface TabRuntime {
   loading: boolean;
@@ -26,11 +26,19 @@ export type OverlaySpec =
   | { kind: 'import' }
   | { kind: 'rail'; anchor: Rect }
   | { kind: 'zenbar'; position: 'top' | 'bottom'; anchor: Rect }
-  | { kind: 'addressbar'; anchor: Rect; focus?: boolean };
+  | { kind: 'addressbar'; anchor: Rect; focus?: boolean }
+  /** Address-bar suggestion dropdown for the base view's bar; never takes focus. Clicks come back as a `suggest-pick` event. */
+  | { kind: 'suggest'; anchor: Rect; items: SuggestItem[]; selected: number };
+
+export interface SuggestItem {
+  url: string;
+  title: string;
+  host: string;
+}
 
 export type OverlayKind = OverlaySpec['kind'];
 /** Hover surfaces never take focus and close when the pointer leaves them. */
-export const HOVER_KINDS: OverlayKind[] = ['rail', 'zenbar', 'addressbar'];
+export const HOVER_KINDS: OverlayKind[] = ['rail', 'zenbar', 'addressbar', 'suggest'];
 /** Popups close when the overlay loses focus (click anywhere else), like native menus. */
 export const BLUR_KINDS: OverlayKind[] = ['menu', 'tabmenu', 'rail', 'zenbar', 'addressbar'];
 
@@ -51,7 +59,7 @@ export interface InitPayload {
   runtime: RuntimeState;
 }
 
-export type UiEvent = { type: 'edit-folder'; id: string } | { type: 'focus-address' } | { type: 'edge-hover' };
+export type UiEvent = { type: 'edit-folder'; id: string } | { type: 'focus-address' } | { type: 'edge-hover' } | { type: 'suggest-pick'; index: number };
 
 export interface OverlayMessage {
   spec: OverlaySpec | null;
@@ -103,6 +111,12 @@ export interface JivvyApi {
   /** Opt-in, one shot: copy Firefox's history into the local store. Settings button calls this. */
   historyImportFirefox(): Promise<ImportStatus>;
   historyImportStatus(): Promise<ImportStatus>;
+  /** The latest nightly prediction snapshot (null until the first training run). */
+  predictions(): Promise<PredictionSnapshot | null>;
+  /** Fires whenever a new snapshot is written (or history was cleared and the snapshot rebuilt). */
+  onPredictions(cb: (s: PredictionSnapshot | null) => void): () => void;
+  /** Retrain now (worker thread). Resolves with the new snapshot, or null if training failed. */
+  predictionsTrain(): Promise<PredictionSnapshot | null>;
   /** Native commands (Tauri `invoke` equivalents). Unported ones reject with "not yet available". */
   invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T>;
 }
@@ -126,4 +140,7 @@ export const CH = {
   historyClear: 'history:clear',
   historyImportFirefox: 'history:importFirefox',
   historyImportStatus: 'history:importStatus',
+  predictions: 'predictions:get',
+  predictionsUpdated: 'predictions:updated',
+  predictionsTrain: 'predictions:train',
 } as const;

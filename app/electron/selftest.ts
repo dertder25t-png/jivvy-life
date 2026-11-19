@@ -9,6 +9,7 @@ import type { StateStore } from './store';
 import type { TabManager } from './tabs';
 import type { Blocker } from './blocker';
 import { HistoryStore } from './history';
+import type { Trainer } from './trainer';
 import { DatabaseSync } from 'node:sqlite';
 import { session as electronSession, safeStorage } from 'electron';
 import { Logins } from './logins';
@@ -32,6 +33,7 @@ export interface TestCtx {
   runtime: RuntimeState;
   blocker: Blocker;
   history: HistoryStore;
+  trainer: Trainer;
   layoutInput(): LayoutInput;
   snapshotOnly: boolean;
 }

@@ -22,6 +22,8 @@ const common = {
 const entries = [
   { entryPoints: [path.join(root, 'electron/main.ts')], outfile: path.join(outDir, 'main.js') },
   { entryPoints: [path.join(root, 'electron/preload.ts')], outfile: path.join(outDir, 'preload.js') },
+  // worker_threads entry for the nightly trainer (electron/trainer.ts spawns dist-electron/trainer-worker.js)
+  { entryPoints: [path.join(root, 'electron/trainer-worker.ts')], outfile: path.join(outDir, 'trainer-worker.js') },
 ];
 
 /**
@@ -80,5 +82,5 @@ export async function watchElectron(onRebuild) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   await buildElectron();
-  console.log('electron: built dist-electron/main.js, preload.js');
+  console.log('electron: built dist-electron/main.js, preload.js, trainer-worker.js');
 }

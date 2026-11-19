@@ -27,6 +27,9 @@ const api: JivvyApi = {
   historyClear: (range) => ipcRenderer.invoke(CH.historyClear, range),
   historyImportFirefox: () => ipcRenderer.invoke(CH.historyImportFirefox),
   historyImportStatus: () => ipcRenderer.invoke(CH.historyImportStatus),
+  predictions: () => ipcRenderer.invoke(CH.predictions),
+  onPredictions: (cb) => listen(CH.predictionsUpdated, cb),
+  predictionsTrain: () => ipcRenderer.invoke(CH.predictionsTrain),
   invoke: async <T,>(cmd: string, args?: Record<string, unknown>) => {
     const r = (await ipcRenderer.invoke(CH.invoke, cmd, args ?? {})) as { ok: boolean; value?: T; error?: string };
     if (!r?.ok) throw new Error(r?.error || 'Command failed');
