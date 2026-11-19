@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { X, Database } from 'lucide-react';
-import { nativeInvoke as invoke, isTauri, isNative } from '../platform';
+import { nativeInvoke as invoke, isTauri, isNative, isElectron, jivvy } from '../platform';
+import { usePredictions } from '../lib/predictions';
+import type { HistoryClearRange, ImportStatus } from '../../shared/ipc';
 import { getVersion } from '@tauri-apps/api/app';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -17,7 +19,7 @@ const Toggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean)
 );
 
 export const SettingsModal: React.FC = () => {
-  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar, showFolders, setShowFolders, zenBarPosition, setZenBarPosition, blockingEnabled, setBlockingEnabled, blockingDisabledSites, setBlockingDisabledSites } =
+  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, saveHistory, setSaveHistory, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar, showFolders, setShowFolders, zenBarPosition, setZenBarPosition, blockingEnabled, setBlockingEnabled, blockingDisabledSites, setBlockingDisabledSites } =
     useWorkspaceStore();
   const [baseUrl, setBaseUrl] = useState(getApiBase());
   const [session, setSessionState] = useState<Session | null>(getSession());
@@ -128,6 +130,47 @@ export const SettingsModal: React.FC = () => {
     }
   };
 
+  const snap = usePredictions();
+  const [histMsg, setHistMsg] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [training, setTraining] = useState(false);
+  const importFirefox = async () => {
+    if (!jivvy || importing) return;
+    setImporting(true);
+    setHistMsg('Importing Firefox history…');
+    // The invoke resolves when the import is done; meanwhile ask for progress.
+    const poll = window.setInterval(() => {
+      void jivvy!.historyImportStatus().then((s: ImportStatus) => s.state === 'running' && setHistMsg(`Importing… ${s.imported.toLocaleString()} visits so far`)).catch(() => undefined);
+    }, 400);
+    try {
+      const r = await jivvy.historyImportFirefox();
+      setHistMsg(
+        r.state === 'done' ? `Imported ${r.imported.toLocaleString()} visits (${r.skipped.toLocaleString()} skipped). Retraining suggestions…` : `Import failed: ${r.error || 'unknown error'}`
+      );
+    } catch (e) {
+      setHistMsg(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      window.clearInterval(poll);
+      setImporting(false);
+    }
+  };
+  const retrain = async () => {
+    if (!jivvy || training) return;
+    setTraining(true);
+    setHistMsg('Training…');
+    try {
+      setHistMsg((await jivvy.predictionsTrain()) ? 'Trained.' : 'Training failed. See the log.');
+    } finally {
+      setTraining(false);
+    }
+  };
+  const clearHistory = async (range: HistoryClearRange) => {
+    if (!jivvy) return;
+    if (range === 'all' && !window.confirm('Delete all browsing history? Suggestions will be reset too.')) return;
+    const n = await jivvy.historyClear(range);
+    setHistMsg(`Cleared ${n.toLocaleString()} visits.`);
+  };
+
   if (!settingsModalOpen) return null;
 
   const run = async (fn: () => Promise<string | void>) => {
@@ -162,7 +205,7 @@ export const SettingsModal: React.FC = () => {
         </div>
 
         <div className="space-y-2 pb-3 border-b border-zinc-800">
-          <Toggle label="Show top bar" checked={showTopBar} onChange={setShowTopBar} />
+          {!isElectron && <Toggle label="Show top bar" checked={showTopBar} onChange={setShowTopBar} />}
           <Toggle label="Show folders in sidebar" checked={showFolders} onChange={setShowFolders} />
           <Toggle label="Auto-hide address bar (hover the top edge to show it)" checked={autoHideAddressBar} onChange={setAutoHideAddressBar} />
           <Toggle label="Clear tabs when the app starts" checked={clearTabsOnStart} onChange={setClearTabsOnStart} />
@@ -269,6 +312,34 @@ export const SettingsModal: React.FC = () => {
               )}
             </div>
             {updMsg && <p className="text-xs text-zinc-400">{updMsg}</p>}
+          </div>
+        )}
+
+        {isElectron && (
+          <div className="space-y-2 border-t border-zinc-800 pt-3" data-section="history">
+            <h4 className="text-xs font-semibold text-zinc-200">History &amp; predictions</h4>
+            <Toggle label="Save browsing history" checked={saveHistory} onChange={setSaveHistory} />
+            <p className="text-xs text-zinc-500">Kept only on this computer. It powers address suggestions and shortcuts.</p>
+            <div className="flex flex-wrap gap-2">
+              <button disabled={importing} onClick={() => void importFirefox()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
+                Import Firefox history
+              </button>
+              <button disabled={training} onClick={() => void retrain()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
+                Retrain now
+              </button>
+            </div>
+            <p className="text-xs text-zinc-400" data-last-trained>
+              {snap ? `Last trained: ${new Date(snap.trainedAt).toLocaleString()}, ${snap.sites.length.toLocaleString()} sites, ${Object.keys(snap.aliases).length.toLocaleString()} shortcuts` : 'Not trained yet.'}
+            </p>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
+              <span>Clear history:</span>
+              {([['hour', 'last hour'], ['day', 'last day'], ['all', 'all']] as const).map(([r, label]) => (
+                <button key={r} onClick={() => void clearHistory(r)} className="px-2.5 py-1 text-xs rounded-lg bg-zinc-800 text-red-300 hover:bg-zinc-700">
+                  {label}
+                </button>
+              ))}
+            </div>
+            {histMsg && <p className="text-xs text-indigo-300">{histMsg}</p>}
           </div>
         )}
 

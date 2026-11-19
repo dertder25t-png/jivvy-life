@@ -3,11 +3,13 @@ import { Search, CornerDownLeft } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { setOverlay } from '../lib/overlay';
 import { isElectron, isOverlayRole, openOverlay } from '../platform';
-import { decide, unitCalc, RouteDecision } from '../lib/router';
+import { destination, recordTyped, route, suggest, usePredictions } from '../lib/predictions';
+import { SuggestRows } from './AddressBar';
 
 export const OPEN_OMNIBOX_EVENT = 'lifeapp:omnibox-open';
 
-const CLS_STYLE: Record<RouteDecision['cls'], string> = {
+const CLS_STYLE: Record<string, string> = {
+  code: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
   search: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
   ask: 'bg-violet-500/15 text-violet-300 border-violet-500/30',
   deep: 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30',
@@ -33,21 +35,44 @@ interface OmniFormProps {
 const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inputRef, onDone }) => {
   const openTab = useWorkspaceStore((s) => s.openTab);
   const [value, setValue] = useState('');
-  const decision = useMemo(() => decide(value), [value]);
-  const calc = useMemo(() => unitCalc(value), [value]);
+  const snap = usePredictions();
+  const [sel, setSel] = useState(-1);
+  const decision = useMemo(() => route(value, snap), [value, snap]);
+  const calc = decision?.calc ?? null;
+  const rows = useMemo(
+    () => (value.trim() && !/^\s*!/.test(value) ? suggest(value, snap).suggestions.map((x) => ({ url: x.url, title: x.title, host: x.host })) : []),
+    [value, snap]
+  );
   const canSubmit = !!decision && (decision.route === 'open-url' || decision.text.length > 0);
+
+  const finish = (url: string, title: string) => {
+    openTab({ title, type: 'web', url });
+    setValue('');
+    setSel(-1);
+    onDone();
+  };
+  const pickRow = (i: number) => {
+    const r = rows[i];
+    if (!r) return;
+    recordTyped({ text: value, url: r.url, shownUrl: r.url, accepted: true });
+    finish(r.url, r.title || r.host);
+  };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (sel >= 0 && rows[sel]) return pickRow(sel);
     if (!decision || !canSubmit) return;
     if (decision.copy) void navigator.clipboard?.writeText(decision.text).catch(() => undefined);
-    openTab({
-      title: decision.route === 'open-url' ? hostOf(decision.url) : `${decision.label}: ${decision.text.slice(0, 40)}`,
-      type: 'web',
-      url: decision.url,
-    });
-    setValue('');
-    onDone();
+    const dest = destination(decision);
+    recordTyped({ text: value, url: decision.route === 'open-url' ? dest.url : '', shownUrl: rows[0]?.url, accepted: false });
+    finish(dest.url, decision.route === 'open-url' ? hostOf(dest.url) : `${dest.label}: ${decision.text.slice(0, 40)}`);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && rows.length) {
+      e.preventDefault();
+      setSel((i) => (e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : Math.max(-1, i - 1)));
+    }
   };
 
   const inputClass =
@@ -63,7 +88,11 @@ const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inpu
           ref={inputRef}
           autoFocus={autoFocus}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSel(-1);
+          }}
+          onKeyDown={onKeyDown}
           placeholder="Search, open an address, or ask Claude…  (!ask !gpt !g !deep !s)"
           className={inputClass}
           spellCheck={false}
@@ -74,13 +103,18 @@ const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inpu
       {(decision || calc) && (
         <div className="flex flex-wrap items-center gap-2 text-xs pl-8 min-h-[1.25rem]">
           {decision && (
-            <span className={`px-2 py-0.5 rounded border ${CLS_STYLE[decision.cls]}`}>
+            <span className={`px-2 py-0.5 rounded border ${CLS_STYLE[decision.route === 'open-url' ? 'url' : decision.cls ?? 'search']}`}>
               → {decision.label}
             </span>
           )}
           {decision && <span className="text-zinc-500 truncate">{decision.why}</span>}
           {calc && <span className="text-amber-300 font-medium">{calc}</span>}
           {decision?.hint && <span className="text-zinc-500 w-full">{decision.hint}</span>}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="pl-8">
+          <SuggestRows items={rows} selected={sel} onPick={pickRow} />
         </div>
       )}
     </form>

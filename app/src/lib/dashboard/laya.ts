@@ -1,3 +1,6 @@
+// NOTE: no longer used by the dashboard search box or the address bars (they route with the ported
+// Lifeboard decide()/complete() in shared/lifeboard, see src/lib/predictions.ts). The laya/NPU
+// helper stays installed for future features; nothing on disk was removed.
 // laya = local OpenVINO "vega" reader (helper/laya_server.py on 127.0.0.1:8770).
 // Calls go through Rust (laya_classify / laya_health) which does the TCP call with a 1.5 s timeout.
 // The Electron build answers both with null for now (laya returns in Phase 2).

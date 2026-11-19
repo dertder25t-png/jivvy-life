@@ -1,11 +1,8 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { CornerDownLeft, Search } from 'lucide-react';
-import {
-  DASH_PREFIXES, PICKABLE, applyLaya, decideDash, forceRoute, needsLaya, routeLabel, unitCalc,
-  type DashDecision, type RouteId,
-} from '../../lib/router';
-import { classify, loadClassifier } from '../../lib/dashboard/classifier';
-import { layaClassify, layaHealth } from '../../lib/dashboard/laya';
+import { DASH_PREFIXES, PICKABLE, forceRoute, routeLabel, type DashDecision, type RouteId } from '../../lib/router';
+import { recordTyped, route, suggest, toDash, usePredictions } from '../../lib/predictions';
+import { SuggestRows } from '../AddressBar';
 import { usePersisted } from '../../lib/dashboard/store';
 import {
   BriefCard, CLS_STYLE, DEFAULT_LINKS, FocusCard, LinksCard, NotesCard, RecentCard, TodayCard, openUrl,
@@ -26,12 +23,11 @@ async function copy(text: string) {
 export const DashboardView: React.FC = () => {
   const [value, setValue] = useState('');
   const [pick, setPick] = useState<Pick>(null);
-  const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [npu, setNpu] = useState<'online' | 'offline' | 'loading'>('offline');
   const [recent, setRecent] = usePersisted<RecentItem[]>('recent', []);
   const [links, setLinks] = usePersisted<LinkItem[]>('links', DEFAULT_LINKS);
-  const [clfReady, setClfReady] = useState(false);
+  const [sel, setSel] = useState(-1);
+  const snap = usePredictions();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const toastTimer = useRef<number>(0);
 
@@ -42,25 +38,8 @@ export const DashboardView: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    loadClassifier().then(() => setClfReady(true));
     taRef.current?.focus();
     return () => window.clearTimeout(toastTimer.current);
-  }, []);
-
-  // NPU status dot: poll laya /health while the view is visible.
-  useEffect(() => {
-    let alive = true;
-    const poll = async () => {
-      if (document.visibilityState !== 'visible') return;
-      const h = await layaHealth();
-      if (alive) setNpu(h?.ok ? (h.ready ? 'online' : 'loading') : 'offline');
-    };
-    poll();
-    const id = window.setInterval(poll, 20000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
   }, []);
 
   // Alt+1..9 opens the numbered link.
@@ -80,11 +59,16 @@ export const DashboardView: React.FC = () => {
   }, [links]);
 
   const deferred = useDeferredValue(value);
-  const decision = useMemo<DashDecision | null>(() => {
-    if (pick) return forceRoute(pick, deferred);
-    return decideDash(deferred, clfReady ? classify : null);
-  }, [deferred, pick, clfReady]);
-  const calc = useMemo(() => (deferred.trim() ? unitCalc(deferred) : null), [deferred]);
+  // Routing and suggestions come from the ported Lifeboard decide()/complete() and the nightly snapshot.
+  const routed = useMemo(() => route(deferred, snap), [deferred, snap]);
+  const decision = useMemo<DashDecision | null>(() => (pick ? forceRoute(pick, deferred) : toDash(routed)), [deferred, pick, routed]);
+  const calc = routed?.calc ?? null;
+  const rows = useMemo(() => {
+    if (!deferred.trim() || /\n/.test(deferred) || /^\s*!/.test(deferred)) return [];
+    return suggest(deferred, snap).suggestions.map((x) => ({ url: x.url, title: x.title, host: x.host }));
+  }, [deferred, snap]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
 
   const autosize = () => {
     const el = taRef.current;
@@ -116,26 +100,28 @@ export const DashboardView: React.FC = () => {
 
   const submit = useCallback(async () => {
     // Decide from the live value: `decision` uses a deferred copy that can lag a fast Enter.
-    const fresh = pick ? forceRoute(pick, value) : decideDash(value, clfReady ? classify : null);
-    if (!fresh || busy || !fresh.text) return;
-    let d = fresh;
-    if (!pick && needsLaya(d)) {
-      setBusy(true);
-      const out = await layaClassify(d.text); // null when laya is down: silent fallback
-      setBusy(false);
-      if (out) {
-        d = applyLaya(d, out.p_ai);
-        setNpu('online');
-      }
+    const shown = rowsRef.current[sel];
+    if (shown) {
+      recordTyped({ text: value, url: shown.url, shownUrl: shown.url, accepted: true });
+      openUrl(shown.url);
+    } else {
+      const d = pick ? forceRoute(pick, value) : toDash(route(value, snap));
+      if (!d || !d.text) return;
+      if (!pick) recordTyped({ text: value, url: d.cls === 'url' ? d.url : '', shownUrl: rowsRef.current[0]?.url, accepted: false });
+      await run(d);
     }
-    await run(d);
     setValue('');
     setPick(null);
+    setSel(-1);
     requestAnimationFrame(autosize);
-  }, [value, clfReady, busy, pick, run]);
+  }, [value, pick, run, sel, snap]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && rowsRef.current.length && !/\n/.test(value)) {
+      e.preventDefault();
+      const n = rowsRef.current.length;
+      setSel((i) => (e.key === 'ArrowDown' ? Math.min(n - 1, i + 1) : Math.max(-1, i - 1)));
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
     } else if (e.key === 'Tab' && value.trim()) {
@@ -146,6 +132,7 @@ export const DashboardView: React.FC = () => {
     } else if (e.key === 'Escape') {
       setValue('');
       setPick(null);
+      setSel(-1);
     }
   };
 
@@ -153,8 +140,6 @@ export const DashboardView: React.FC = () => {
     if (i.command) copy(i.command).then((ok) => showToast(ok ? 'Claude command copied.' : 'Could not copy.'));
     else if (i.url) openUrl(i.url);
   };
-
-  const dot = npu === 'online' ? 'bg-emerald-400' : npu === 'loading' ? 'bg-amber-400' : 'bg-zinc-600';
 
   return (
     <div className="h-full w-full overflow-y-auto bg-zinc-950 text-zinc-100">
@@ -168,6 +153,7 @@ export const DashboardView: React.FC = () => {
               value={value}
               onChange={(e) => {
                 setValue(e.target.value);
+                setSel(-1);
                 if (!e.target.value) setPick(null);
                 autosize();
               }}
@@ -184,12 +170,9 @@ export const DashboardView: React.FC = () => {
             {decision && decision.text ? (
               <>
                 <span className={`px-2 py-0.5 rounded-full border ${CLS_STYLE[decision.cls] || CLS_STYLE.search}`}>
-                  {busy ? 'asking NPU…' : decision.label}
+                  {decision.cls === 'url' ? '→ ' : ''}{decision.label}
                 </span>
-                <span className="text-zinc-500 truncate">
-                  {pick ? 'picked' : decision.why}
-                  {needsLaya(decision) && !pick ? ' · NPU will confirm on Enter' : ''}
-                </span>
+                <span className="text-zinc-500 truncate">{pick ? 'picked' : decision.why}</span>
                 {calc && <span className="ml-auto text-emerald-300 font-medium">{calc}</span>}
                 <span className={calc ? 'text-zinc-600' : 'ml-auto text-zinc-600'}>
                   Tab: {pick ? routeLabel(pick) : 'auto'}
@@ -199,6 +182,11 @@ export const DashboardView: React.FC = () => {
               <span className="text-zinc-600">Enter sends · Shift+Enter newline · Tab picks a route</span>
             )}
           </div>
+          {rows.length > 0 && (
+            <div className="px-3 pb-3" data-dash-suggest>
+              <SuggestRows items={rows} selected={sel} onPick={(i) => { setSel(i); const r = rows[i]; recordTyped({ text: value, url: r.url, shownUrl: r.url, accepted: true }); openUrl(r.url); setValue(''); setSel(-1); }} className="!shadow-none !border-zinc-800 !bg-zinc-950" />
+            </div>
+          )}
         </div>
 
         <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-zinc-600">
@@ -208,9 +196,6 @@ export const DashboardView: React.FC = () => {
               {p}
             </button>
           ))}
-          <span className="inline-flex items-center gap-1.5 ml-2" title={`NPU reader (laya): ${npu}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${dot}`} /> NPU {npu === 'offline' ? 'off' : npu === 'loading' ? 'loading' : 'on'}
-          </span>
         </div>
 
         <div className="mt-10 grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">

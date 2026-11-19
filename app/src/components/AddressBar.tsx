@@ -1,13 +1,42 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, RotateCw, Search, KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
-import { decide } from '../lib/router';
+import { destination, recordTyped, route, suggest, usePredictions } from '../lib/predictions';
+import type { Completion } from '../../shared/lifeboard';
+import type { Visit } from '../../shared/history-types';
 import { setOverlay } from '../lib/overlay';
 import { useHoverIntent } from '../lib/useHoverIntent';
 import { NAV_EVENT } from './TopTabBar';
 import { normalizeHost } from '../services/blocking';
 import { jivvy, isElectron, isNative, isTauri, floatsToOverlay, nativeInvoke as invoke, openOverlay } from '../platform';
 import { LAYOUT, chromeInsets } from '../../shared/layout';
+import type { SuggestItem } from '../../shared/ipc';
+
+const MAX_ROWS = 6;
+/** Show an address without its scheme and trailing slash, like a browser does in its list. */
+const shortUrl = (u: string) => u.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '');
+
+/** The suggestion rows. Mouse down (not click) picks, so the address input never loses focus first. */
+export const SuggestRows: React.FC<{ items: SuggestItem[]; selected: number; onPick: (i: number) => void; className?: string }> = ({ items, selected, onPick, className = '' }) => (
+  <ul role="listbox" className={`bg-zinc-900 border border-zinc-700 rounded-md shadow-xl shadow-black/50 py-1 overflow-hidden ${className}`}>
+    {items.map((it, i) => (
+      <li
+        key={it.url}
+        role="option"
+        aria-selected={i === selected}
+        data-suggest-row
+        onMouseDown={(e) => {
+          e.preventDefault();
+          onPick(i);
+        }}
+        className={`flex items-baseline gap-2 px-3 py-1.5 text-xs cursor-pointer ${i === selected ? 'bg-indigo-600/30 text-zinc-50' : 'text-zinc-300 hover:bg-zinc-800'}`}
+      >
+        <span className="truncate font-medium shrink-0 max-w-[45%]">{it.host}</span>
+        <span className="truncate text-zinc-500">{it.title || shortUrl(it.url)}</span>
+      </li>
+    ))}
+  </ul>
+);
 
 function hostOf(url: string) {
   try {
@@ -135,22 +164,165 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
     if (activeTabId) void invoke('fill_login', { label: `pane_${activeTabId}`, username }).catch(() => {});
   };
 
-  const decision = useMemo(() => (focused ? decide(value) : null), [focused, value]);
+  const snap = usePredictions();
+  const decision = focused && value.trim() ? route(value, snap) : null;
+
+  // ---- Inline autocomplete + suggestion dropdown -------------------------------------------
+  // `fill` is the inline completion currently appended (selected) in the box: typing replaces it,
+  // Backspace removes it, Enter opens fill.url. `comp` feeds the dropdown (up to 6 rows).
+  const [comp, setComp] = useState<Completion | null>(null);
+  const [sel, setSel] = useState(-1);
+  const [dismissed, setDismissed] = useState(false);
+  const fillRef = useRef<{ typed: string; inline: string; url: string } | null>(null);
+  const typedRef = useRef(''); // what the user typed, before arrow keys swapped in a suggestion
+  const pendingSel = useRef<[number, number] | null>(null);
+  const recentRef = useRef<Visit[] | undefined>(undefined);
+  const blurTimer = useRef(0);
+  const items: SuggestItem[] = comp && !dismissed && focused ? comp.suggestions.slice(0, MAX_ROWS).map((x) => ({ url: x.url, title: x.title, host: x.host })) : [];
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const selRef = useRef(sel);
+  selRef.current = sel;
+  const suggestOpen = items.length > 0;
+
+  // Put the caret selection over the inline part once React has rendered the new value.
+  useLayoutEffect(() => {
+    const r = pendingSel.current;
+    pendingSel.current = null;
+    if (r && inputRef.current && document.activeElement === inputRef.current) inputRef.current.setSelectionRange(r[0], r[1]);
+  });
+
+  const resetSuggest = () => {
+    fillRef.current = null;
+    typedRef.current = '';
+    setComp(null);
+    setSel(-1);
+    setDismissed(false);
+  };
+
+  const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value;
+    const ne = e.nativeEvent as InputEvent;
+    typedRef.current = v;
+    setSel(-1);
+    setDismissed(false);
+    if (!v.trim()) {
+      fillRef.current = null;
+      setComp(null);
+      setValue(v);
+      return;
+    }
+    const c = suggest(v, snap, recentRef.current);
+    setComp(c);
+    // Deleting (Backspace on the selected inline part, Delete, cut) or composing never re-fills.
+    if (c.inline && c.url && !ne.isComposing && !(ne.inputType || '').startsWith('delete') && e.target.selectionStart === v.length) {
+      fillRef.current = { typed: v, inline: c.inline, url: c.url };
+      pendingSel.current = [v.length, v.length + c.inline.length];
+      setValue(v + c.inline);
+    } else {
+      fillRef.current = null;
+      setValue(v);
+    }
+  };
+
+  // Overlay-hosted dropdown for the base view's bar (Electron): the page views paint above this
+  // view, so the list goes to the overlay view, which floats over them. It never takes focus.
+  const overlayList = isElectron && !floating;
+  const listOpenRef = useRef(false);
+  useEffect(() => {
+    if (!overlayList) return;
+    if (suggestOpen && inputRef.current) {
+      const r = inputRef.current.getBoundingClientRect();
+      openOverlay({ kind: 'suggest', anchor: { x: r.left, y: r.bottom + 4, width: r.width, height: 0 }, items, selected: sel });
+      listOpenRef.current = true;
+    } else if (listOpenRef.current) {
+      listOpenRef.current = false;
+      jivvy?.overlayClose();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayList, suggestOpen, comp, sel, dismissed]);
+  useEffect(
+    () => () => {
+      window.clearTimeout(blurTimer.current);
+      if (listOpenRef.current) jivvy?.overlayClose();
+    },
+    []
+  );
+  // Tauri: native pane webviews paint above HTML, so hide them while the list is open.
+  useEffect(() => {
+    if (!isTauri) return;
+    setOverlay('suggest', suggestOpen);
+    return () => setOverlay('suggest', false);
+  }, [suggestOpen]);
 
   // Follow the active tab unless the user is typing.
   useEffect(() => {
     if (!focused) setValue(activeUrl);
   }, [activeUrl, activeTabId, focused]);
 
+  const go = (url: string, title: string) => {
+    if (activeTabId && activeType === 'web') navigateTab(activeTabId, url, title);
+    else openTab({ title, type: 'web', url });
+    resetSuggest();
+    window.clearTimeout(blurTimer.current);
+    inputRef.current?.blur();
+  };
+
+  const openSuggestion = useCallback(
+    (i: number) => {
+      const it = itemsRef.current[i];
+      if (!it) return;
+      recordTyped({ text: typedRef.current || it.host, url: it.url, shownUrl: it.url, accepted: true });
+      go(it.url, it.title || hostOf(it.url));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeTabId, activeType]
+  );
+  const openSuggestionRef = useRef(openSuggestion);
+  openSuggestionRef.current = openSuggestion;
+  useEffect(() => {
+    if (!overlayList) return;
+    const onUi = (e: Event) => {
+      const d = (e as CustomEvent<{ type: string; index?: number }>).detail;
+      if (d?.type === 'suggest-pick' && typeof d.index === 'number') openSuggestionRef.current(d.index);
+    };
+    window.addEventListener('jivvy:ui', onUi);
+    return () => window.removeEventListener('jivvy:ui', onUi);
+  }, [overlayList]);
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    const d = decide(value);
+    if (selRef.current >= 0 && itemsRef.current[selRef.current]) return openSuggestion(selRef.current);
+    const fill = fillRef.current;
+    if (fill && value === fill.typed + fill.inline) {
+      recordTyped({ text: fill.typed, url: fill.url, shownUrl: fill.url, accepted: true });
+      return go(fill.url, hostOf(fill.url));
+    }
+    const d = route(value, snap);
     if (!d || (d.route !== 'open-url' && !d.text)) return;
     if (d.copy) void navigator.clipboard?.writeText(d.text).catch(() => undefined);
-    const title = d.route === 'open-url' ? hostOf(d.url) : `${d.label}: ${d.text.slice(0, 40)}`;
-    if (activeTabId && activeType === 'web') navigateTab(activeTabId, d.url, title);
-    else openTab({ title, type: 'web', url: d.url });
-    inputRef.current?.blur();
+    const dest = destination(d);
+    recordTyped({ text: typedRef.current || value, url: d.route === 'open-url' ? dest.url : '', shownUrl: comp?.url, accepted: false });
+    go(dest.url, d.route === 'open-url' ? hostOf(dest.url) : `${dest.label}: ${d.text.slice(0, 40)}`);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      if (suggestOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        setDismissed(true);
+        setSel(-1);
+      } else inputRef.current?.blur();
+    } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && suggestOpen && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      const n = itemsRef.current.length;
+      const next = e.key === 'ArrowDown' ? Math.min(n - 1, sel + 1) : sel - 1;
+      setSel(next);
+      fillRef.current = null;
+      // Show where Enter would go; going back above the first row restores what was typed.
+      setValue(next >= 0 ? shortUrl(itemsRef.current[next].url) : typedRef.current);
+    }
   };
 
   const nav = (action: 'back' | 'forward' | 'reload') => {
@@ -184,21 +356,31 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
         <input
           ref={inputRef}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={onChange}
           onFocus={(e) => {
+            window.clearTimeout(blurTimer.current);
             setFocused(true);
             e.currentTarget.select();
+            if (jivvy) void jivvy.historyRecent(100).then((r) => (recentRef.current = r), () => undefined);
           }}
           onBlur={() => {
-            setFocused(false);
-            setValue(activeUrl);
+            // Delayed: a click on the overlay-hosted list moves focus to the overlay view first.
+            window.clearTimeout(blurTimer.current);
+            blurTimer.current = window.setTimeout(
+              () => {
+                setFocused(false);
+                setValue(activeUrl);
+                resetSuggest();
+              },
+              overlayList ? 250 : 0
+            );
           }}
-          onKeyDown={(e) => e.key === 'Escape' && inputRef.current?.blur()}
+          onKeyDown={onKeyDown}
           spellCheck={false}
           placeholder="Search or enter address"
           className="flex-1 min-w-0 bg-transparent text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none"
         />
-        {decision && value.trim() && <span className="text-[10px] text-zinc-500 shrink-0">{decision.label}</span>}
+        {decision && value.trim() && <span className="text-[10px] text-zinc-500 shrink-0">{decision.route === 'open-url' ? '→ ' : ''}{decision.label}</span>}
       </div>
       {isNative && activeType === 'web' && siteHost && blockingEnabled && (
         <button
@@ -227,6 +409,13 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
         </div>
       )}
     </form>
+    {suggestOpen && !overlayList && (
+      // Floating bar (overlay view): in flow, so the overlay measures and grows to include it.
+      // Other shells: a plain absolute dropdown under the bar.
+      <div className={floating ? 'px-2 pt-1' : 'relative'}>
+        <SuggestRows items={items} selected={sel} onPick={openSuggestion} className={floating ? '' : 'absolute left-12 right-2 top-1 z-50'} />
+      </div>
+    )}
     </div>
   );
 });

@@ -11,7 +11,7 @@ import { HamburgerPanel, menuPos, CLEAR_TABS_CONFIRM } from '../components/Hambu
 import { Sidebar, TabContextMenu } from '../components/Sidebar';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { OmniboxPalette } from '../components/ZenOmnibox';
-import { AddressBar } from '../components/AddressBar';
+import { AddressBar, SuggestRows } from '../components/AddressBar';
 import { ZenBarContent } from '../App';
 
 const ImportWizard = lazy(() => import('../components/ImportWizard').then((m) => ({ default: m.ImportWizard })));
@@ -114,6 +114,12 @@ const Surface: React.FC<{ spec: OverlaySpec; win: { width: number; height: numbe
         <HoverSurface onClose={close} style={{ position: 'fixed', left: 0, width: win.width, ...(spec.position === 'top' ? { top: 0 } : { bottom: 0 }) }}>
           <ZenBarContent />
         </HoverSurface>
+      );
+    case 'suggest':
+      return (
+        <div style={{ position: 'fixed', left: spec.anchor.x, top: spec.anchor.y, width: spec.anchor.width }}>
+          <SuggestRows items={spec.items} selected={spec.selected} onPick={(index) => jivvy?.emit({ type: 'suggest-pick', index })} />
+        </div>
       );
     case 'addressbar':
       return (

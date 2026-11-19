@@ -58,6 +58,7 @@ interface WorkspaceState extends PersistedState {
   setBlockingDisabledSites: (v: string[]) => void;
   setAutoHideAddressBar: (v: boolean) => void;
   setShowTopBar: (v: boolean) => void;
+  setSaveHistory: (v: boolean) => void;
   setClearTabsOnStart: (v: boolean) => void;
   setShowFolders: (v: boolean) => void;
   setZenBarPosition: (v: ZenBarPosition) => void;
@@ -138,6 +139,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     setBlockingDisabledSites: (v) => act({ type: 'setPref', key: 'blockingDisabledSites', value: [...new Set(v)].slice(0, MAX_BLOCK_SITES) }),
     setAutoHideAddressBar: pref('autoHideAddressBar'),
     setShowTopBar: pref('showTopBar'),
+    setSaveHistory: pref('saveHistory'),
     setClearTabsOnStart: pref('clearTabsOnStart'),
     setShowFolders: pref('showFolders'),
     setZenBarPosition: pref('zenBarPosition'),
