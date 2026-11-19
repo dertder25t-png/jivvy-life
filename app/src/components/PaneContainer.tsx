@@ -62,11 +62,21 @@ function setupNativeListeners() {
     useWorkspaceStore.getState().openTab({ title, type: 'web', url });
   });
   void listen<{ label: string; url: string; title: string }>('lifeapp:page', ({ payload }) => {
-    if (!payload?.label?.startsWith('pane_') || !payload.url) return;
-    const tabId = payload.label.slice('pane_'.length);
+    if (!payload?.label || !payload.url) return;
+    // Labels aren't derived from tab ids anymore, so find the owning tab by its view.
+    // The unclaimed spare is never in `views`, so its events fall through here.
+    let tabId: string | undefined;
+    let v: NativeView | undefined;
+    for (const [id, view] of views) {
+      if (view.wv.label === payload.label) {
+        tabId = id;
+        v = view;
+        break;
+      }
+    }
+    if (!tabId || !v) return;
     // Record the URL on the live view first so the pane effect doesn't recreate it.
-    const v = views.get(tabId);
-    if (v) v.url = payload.url;
+    v.url = payload.url;
     useWorkspaceStore.getState().syncTabFromPage(tabId, payload.url, payload.title);
   });
 }
@@ -124,6 +134,35 @@ function evictOldestIfNeeded() {
   }
 }
 
+// Spare pool: exactly one hidden, pre-created webview waiting to be claimed by the next tab
+// that needs a view. Spawning the WebKitGTK web process is the slow part, so doing it ahead
+// of time lets a new tab start navigating almost immediately. The spare is never in `views`,
+// so eviction, background sleep and orphan cleanup all skip it.
+let paneSeq = 0;
+let spare: NativeView | null = null;
+let spareCreating = false;
+function ensureSpare() {
+  if (!isTauri() || spare || spareCreating) return;
+  spareCreating = true;
+  const label = `pane_spare_${++paneSeq}`;
+  const wv = new Webview(getCurrentWindow(), label, { url: 'about:blank', x: 0, y: 0, width: 1, height: 1 });
+  const ready = new Promise<boolean>((resolve) => {
+    void wv.once('tauri://created', () => resolve(true));
+    void wv.once('tauri://error', () => resolve(false));
+  });
+  void ready.then(async (ok) => {
+    spareCreating = false;
+    if (!ok) {
+      window.setTimeout(ensureSpare, 3000);
+      return;
+    }
+    void invoke('configure_pane', { label }).catch(() => {});
+    await wv.hide().catch(() => {});
+    // Only published once hidden, so a claimed spare can never flash on screen.
+    spare = { wv, url: 'about:blank', ready: Promise.resolve(true), lastUsed: Date.now() };
+  });
+}
+
 // Creates the native webview once per tab; URL changes go through load_pane, never recreate.
 function ensureView(tabId: string, url: string, rect: Rect): Promise<NativeView | null> {
   return enqueue(tabId, async () => {
@@ -132,7 +171,19 @@ function ensureView(tabId: string, url: string, rect: Rect): Promise<NativeView 
       existing.lastUsed = Date.now();
       return (await existing.ready) ? existing : null;
     }
-    const wv = new Webview(getCurrentWindow(), `pane_${tabId}`, { url, ...rect });
+    if (spare) {
+      // Claim the ready spare: navigate it instead of spawning a new webview.
+      const claimed = spare;
+      spare = null;
+      claimed.url = url;
+      claimed.lastUsed = Date.now();
+      views.set(tabId, claimed);
+      if (url !== 'about:blank') void invoke('load_pane', { label: claimed.wv.label, url }).catch(() => {});
+      window.setTimeout(ensureSpare, 500);
+      evictOldestIfNeeded();
+      return claimed;
+    }
+    const wv = new Webview(getCurrentWindow(), `pane_view_${++paneSeq}`, { url, ...rect });
     const ready = new Promise<boolean>((resolve) => {
       void wv.once('tauri://created', () => resolve(true));
       void wv.once('tauri://error', () => {
@@ -183,7 +234,7 @@ const NativeWebPane: React.FC<{ tab: WorkspaceTab; primary: boolean }> = ({ tab,
       const target = urlRef.current;
       if (v.url === target) return;
       v.url = target;
-      await invoke('load_pane', { label: `pane_${id}`, url: target }).catch(() => {});
+      await invoke('load_pane', { label: v.wv.label, url: target }).catch(() => {});
     });
   }, [tab.id, url]);
 
@@ -192,8 +243,9 @@ const NativeWebPane: React.FC<{ tab: WorkspaceTab; primary: boolean }> = ({ tab,
     if (!primary) return;
     const onNav = (e: Event) => {
       const action = (e as CustomEvent<{ action: 'back' | 'forward' | 'reload' }>).detail?.action;
-      if (!action) return;
-      void invoke('nav_pane', { label: `pane_${tab.id}`, action }).catch(() => {});
+      const label = views.get(tab.id)?.wv.label;
+      if (!action || !label) return;
+      void invoke('nav_pane', { label, action }).catch(() => {});
     };
     window.addEventListener(NAV_EVENT, onNav);
     return () => window.removeEventListener(NAV_EVENT, onNav);
@@ -343,3 +395,5 @@ export const PaneContainer: React.FC = () => {
 };
 
 setupNativeListeners();
+// Warm the first spare shortly after startup, once the window is up and the UI is idle.
+if (typeof window !== 'undefined') window.setTimeout(ensureSpare, 1500);
