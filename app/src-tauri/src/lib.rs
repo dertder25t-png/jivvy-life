@@ -11,6 +11,20 @@ mod linux {
 
     thread_local! {
         static OVERLAY: RefCell<Option<gtk::Overlay>> = const { RefCell::new(None) };
+        // True when we (not the user/WM) put the toplevel into fullscreen for a pane video.
+        static FS_BY_US: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn toplevel_of(wv: &gtk::Widget) -> Option<gtk::Window> {
+        wv.toplevel().and_then(|t| t.downcast::<gtk::Window>().ok())
+    }
+
+    pub fn exit_fullscreen_toplevel(wv: &gtk::Widget) {
+        if FS_BY_US.with(|f| f.replace(false)) {
+            if let Some(win) = toplevel_of(wv) {
+                win.unfullscreen();
+            }
+        }
     }
     // All webviews share one WebsiteDataManager; point its cookie store at disk exactly once.
     static COOKIES_SET: AtomicBool = AtomicBool::new(false);
@@ -133,6 +147,38 @@ mod linux {
 
         // Keep the owning tab's title/URL in sync with what the page actually shows.
         if let Some(label) = pane_label {
+            // Video fullscreen. Returning false from enter/leave-fullscreen lets WebKit run its
+            // default handler (fullscreen the toplevel GtkWindow); we also do it explicitly so
+            // the window is fullscreen even if WebKit leaves a child webview's toplevel alone.
+            let (app_fs, label_fs) = (app.clone(), label.clone());
+            wv.connect_enter_fullscreen(move |w| {
+                let top = toplevel_of(w.upcast_ref());
+                if let Some(win) = top {
+                    let already = win
+                        .window()
+                        .map(|g| g.state().contains(gtk::gdk::WindowState::FULLSCREEN))
+                        .unwrap_or(false);
+                    if !already {
+                        FS_BY_US.with(|f| f.set(true));
+                        win.fullscreen();
+                    }
+                }
+                let _ = app_fs.emit("lifeapp:fullscreen", serde_json::json!({ "label": label_fs, "on": true }));
+                false
+            });
+            let (app_fs, label_fs) = (app.clone(), label.clone());
+            wv.connect_leave_fullscreen(move |w| {
+                exit_fullscreen_toplevel(w.upcast_ref());
+                let _ = app_fs.emit("lifeapp:fullscreen", serde_json::json!({ "label": label_fs, "on": false }));
+                false
+            });
+            let (app_au, label_au) = (app.clone(), label.clone());
+            wv.connect_is_playing_audio_notify(move |w| {
+                let _ = app_au.emit(
+                    "lifeapp:audio",
+                    serde_json::json!({ "label": label_au, "playing": w.is_playing_audio() }),
+                );
+            });
             // title/uri notify fire many times per load; only emit real changes.
             let last = std::rc::Rc::new(RefCell::new((String::new(), String::new())));
             let report = move |webview: &webkit2gtk::WebView| {
@@ -182,6 +228,66 @@ fn place_pane(
     }
     #[cfg(not(target_os = "linux"))]
     let _ = (app, label, x, y, width, height);
+    Ok(())
+}
+
+/// Leave video fullscreen: ask the page to exit, and release the window if we fullscreened it.
+#[tauri::command]
+fn exit_fullscreen(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        use tauri::Manager;
+        let wv = app.get_webview(&label).ok_or("unknown webview")?;
+        let _ = wv.eval("(document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document);");
+        wv.with_webview(move |pw| {
+            let w: gtk::Widget = pw.inner().upcast();
+            linux::exit_fullscreen_toplevel(&w);
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, label);
+    Ok(())
+}
+
+/// True while the pane is producing audio. Runs on the GTK thread; the command itself is async
+/// so waiting for the answer never blocks that thread.
+#[tauri::command(async)]
+fn pane_playing_audio(app: tauri::AppHandle, label: String) -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::Manager;
+        let wv = app.get_webview(&label).ok_or("unknown webview")?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        wv.with_webview(move |pw| {
+            use webkit2gtk::WebViewExt;
+            let _ = tx.send(pw.inner().is_playing_audio());
+        })
+        .map_err(|e| e.to_string())?;
+        rx.recv_timeout(std::time::Duration::from_secs(2)).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, label);
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+fn set_pane_muted(app: tauri::AppHandle, label: String, muted: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::Manager;
+        let wv = app.get_webview(&label).ok_or("unknown webview")?;
+        wv.with_webview(move |pw| {
+            use webkit2gtk::WebViewExt;
+            pw.inner().set_is_muted(muted);
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, label, muted);
     Ok(())
 }
 
@@ -268,7 +374,7 @@ fn nav_pane(app: tauri::AppHandle, label: String, action: String) -> Result<(), 
         "back" => "window.history.back();",
         "forward" => "window.history.forward();",
         "reload" => "window.location.reload();",
-        // Hidden tab: stop audio/video so background tabs don't burn CPU.
+        // Not called on hide (background audio keeps playing); kept for explicit use.
         "pause" => "document.querySelectorAll('video,audio').forEach(m=>{try{m.pause()}catch(e){}});",
         _ => return Ok(()),
     };
@@ -355,6 +461,9 @@ pub fn run() {
             set_blocking,
             blocking_status,
             nav_pane,
+            exit_fullscreen,
+            pane_playing_audio,
+            set_pane_muted,
             load_pane,
             laya_classify,
             laya_health,

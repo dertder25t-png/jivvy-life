@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { Globe, FileText, BookOpen, X, Plus, Pin, LayoutDashboard } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
+import { togglePaneMute } from './PaneContainer';
 import { WorkspaceTab } from '../types/workspace';
 import { OPEN_OMNIBOX_EVENT } from './ZenOmnibox';
 import { HamburgerMenu } from './HamburgerMenu';
@@ -12,6 +13,24 @@ const TabIcon: React.FC<{ type: WorkspaceTab['type'] }> = ({ type }) => {
   if (type === 'jivvy') return <BookOpen className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
   if (type === 'note') return <FileText className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
   return <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />;
+};
+
+const AudioBadge: React.FC<{ tabId: string }> = ({ tabId }) => {
+  const a = useWorkspaceStore((s) => s.audioTabs[tabId]);
+  if (!a?.playing) return null;
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        togglePaneMute(tabId);
+      }}
+      title={a.muted ? 'Unmute tab' : 'Mute tab'}
+      aria-label={a.muted ? 'Unmute tab' : 'Mute tab'}
+      className="shrink-0 text-xs leading-none hover:opacity-80"
+    >
+      {a.muted ? '🔇' : '🔊'}
+    </button>
+  );
 };
 
 interface TabChipProps {
@@ -42,6 +61,7 @@ const TabChip = React.memo(({ tab, active, onFocus, onClose, onTogglePin }: TabC
     {tab.pinned && <Pin className="w-3 h-3 text-zinc-500 shrink-0 -rotate-45" />}
     <TabIcon type={tab.type} />
     <span className="truncate flex-1">{tab.title}</span>
+    <AudioBadge tabId={tab.id} />
     {tab.type !== 'dashboard' && (
       <button
         onClick={(e) => {

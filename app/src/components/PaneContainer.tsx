@@ -25,12 +25,36 @@ interface NativeView {
 }
 const views = new Map<string, NativeView>();
 
-// Background tabs: pause their media when hidden, and unload them entirely after they've
-// been out of sight this long (they reload when you come back to them).
+const FS_EVENT = 'lifeapp:fs-change';
+// Tab id of the pane currently showing fullscreen video (null when none).
+let fullscreenTabId: string | null = null;
+function setFullscreen(id: string | null) {
+  if (fullscreenTabId === id) return;
+  fullscreenTabId = id;
+  window.dispatchEvent(new Event(FS_EVENT));
+}
+function exitFullscreenFor(tabId: string) {
+  if (fullscreenTabId !== tabId) return;
+  const label = views.get(tabId)?.wv.label;
+  setFullscreen(null);
+  if (label) void invoke('exit_fullscreen', { label }).catch(() => {});
+}
+
+/** Toggle mute for a tab's pane (speaker indicator in the sidebar / top bar). */
+export function togglePaneMute(tabId: string) {
+  const label = views.get(tabId)?.wv.label;
+  if (!label) return;
+  const st = useWorkspaceStore.getState();
+  const muted = !st.audioTabs[tabId]?.muted;
+  st.setTabAudio(tabId, { muted });
+  void invoke('set_pane_muted', { label, muted }).catch(() => {});
+}
+
+// Background tabs keep playing audio like a normal browser. They are unloaded entirely after
+// being out of sight this long (they reload when you come back), unless they're playing audio.
 const SLEEP_AFTER_MS = 15 * 60 * 1000;
 function markHidden(v: NativeView) {
   v.hiddenAt = Date.now();
-  void invoke('nav_pane', { label: v.wv.label, action: 'pause' }).catch(() => {});
 }
 function markShown(v: NativeView) {
   v.hiddenAt = undefined;
@@ -41,7 +65,13 @@ if (typeof window !== 'undefined') {
     const visible = visibleTabIds();
     const now = Date.now();
     for (const [id, v] of views) {
-      if (!visible.has(id) && v.hiddenAt && now - v.hiddenAt > SLEEP_AFTER_MS) void destroyView(id);
+      if (visible.has(id) || !v.hiddenAt || now - v.hiddenAt <= SLEEP_AFTER_MS) continue;
+      // On any error assume it is playing: never destroy a pane we couldn't check.
+      void invoke<boolean>('pane_playing_audio', { label: v.wv.label })
+        .catch(() => true)
+        .then((playing) => {
+          if (!playing && views.get(id) === v && v.hiddenAt && !visibleTabIds().has(id)) void destroyView(id);
+        });
     }
   }, 60_000);
 }
@@ -79,6 +109,20 @@ function setupNativeListeners() {
     v.url = payload.url;
     useWorkspaceStore.getState().syncTabFromPage(tabId, payload.url, payload.title);
   });
+  const tabOfLabel = (label: string) => {
+    for (const [id, view] of views) if (view.wv.label === label) return id;
+    return undefined;
+  };
+  void listen<{ label: string; on: boolean }>('lifeapp:fullscreen', ({ payload }) => {
+    const id = payload?.label ? tabOfLabel(payload.label) : undefined;
+    if (!id) return;
+    if (payload.on) setFullscreen(id);
+    else if (fullscreenTabId === id) setFullscreen(null);
+  });
+  void listen<{ label: string; playing: boolean }>('lifeapp:audio', ({ payload }) => {
+    const id = payload?.label ? tabOfLabel(payload.label) : undefined;
+    if (id) useWorkspaceStore.getState().setTabAudio(id, { playing: !!payload.playing });
+  });
 }
 const chains = new Map<string, Promise<unknown>>();
 const enqueue = <T,>(tabId: string, fn: () => Promise<T>): Promise<T> => {
@@ -108,6 +152,11 @@ function destroyView(tabId: string) {
     const v = views.get(tabId);
     if (!v) return;
     views.delete(tabId);
+    if (fullscreenTabId === tabId) {
+      setFullscreen(null);
+      void invoke('exit_fullscreen', { label: v.wv.label }).catch(() => {});
+    }
+    useWorkspaceStore.getState().clearTabAudio(tabId);
     await v.ready;
     await v.wv.close().catch(() => {});
   });
@@ -263,17 +312,33 @@ const NativeWebPane: React.FC<{ tab: WorkspaceTab; primary: boolean }> = ({ tab,
     const apply = (force = false) => {
       raf = 0;
       if (!view || cancelled) return;
+      const fs = fullscreenTabId;
+      if (fs && fs !== tab.id) {
+        // Another pane is fullscreen: hide this one until it leaves.
+        lastApplied.current = 'fs-hidden';
+        if (shown.current) {
+          shown.current = false;
+          void view.wv.hide().catch(() => {});
+        }
+        return;
+      }
       const r = rectOf(host);
-      if (rail.expanded) {
+      if (fs === tab.id) {
+        // Fullscreen: cover the whole window, ignoring layout, rail and the address bar.
+        r.x = 0;
+        r.y = 0;
+        r.width = Math.max(1, window.innerWidth);
+        r.height = Math.max(1, window.innerHeight);
+      } else if (rail.expanded) {
         const shift = Math.max(0, rail.width - r.x);
         r.x += shift;
         r.width = Math.max(1, r.width - shift);
       }
-      const sig = `${r.x},${r.y},${r.width},${r.height},${hidden}`;
+      const sig = `${r.x},${r.y},${r.width},${r.height},${hidden && !fs},${fs ?? ''}`;
       if (!force && sig === lastApplied.current) return;
       lastApplied.current = sig;
 
-      if (hidden) {
+      if (hidden && !fs) {
         shown.current = false;
         markHidden(view);
         void view.wv.hide().catch(() => {});
@@ -307,6 +372,11 @@ const NativeWebPane: React.FC<{ tab: WorkspaceTab; primary: boolean }> = ({ tab,
     ro.observe(host);
     if (host.parentElement) ro.observe(host.parentElement);
     window.addEventListener('resize', schedule);
+    const onFs = () => {
+      lastApplied.current = '';
+      schedule();
+    };
+    window.addEventListener(FS_EVENT, onFs);
 
     return () => {
       cancelled = true;
@@ -314,6 +384,8 @@ const NativeWebPane: React.FC<{ tab: WorkspaceTab; primary: boolean }> = ({ tab,
       ro.disconnect();
       window.removeEventListener('resize', schedule);
       window.removeEventListener(RAIL_EVENT, onRail);
+      window.removeEventListener(FS_EVENT, onFs);
+      exitFullscreenFor(tab.id);
       shown.current = false;
       const v = views.get(tab.id);
       if (v) {

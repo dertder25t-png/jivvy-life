@@ -21,6 +21,16 @@ The previous project in this repo, the Lifeboard Firefox extension, is kept at t
 - `npm run app:dev` opens a temporary hot-reload window for development. It is not an install.
 - There is no AppImage for local use: the AppImage bundles its own WebKit, which crashes on this machine, so local installs use the system WebKit. In-app updates only work in AppImage builds (the GitHub release); a source install shows an "Installed from source" note instead.
 
+### Video playback
+
+WebKitGTK plays video through the system GStreamer codecs. If YouTube and similar sites show no video, install them:
+
+```
+sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav
+```
+
+Intel hardware decoding (VA-API) is used automatically when the drivers are present. `npm run app:install` warns if these plugins are missing. Videos can go fullscreen (Esc exits), and tab audio keeps playing in the background; click the speaker next to a tab title to mute it.
+
 ## Ad & tracker blocking (app)
 
 Pane webviews (never the app UI) get WebKit content rules built from EasyList and EasyPrivacy

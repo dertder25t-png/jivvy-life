@@ -58,3 +58,10 @@ echo "Installed Jivvy Life:"
 echo "  binary:   $BIN_DIR/jivvy-life"
 echo "  launcher: $DESKTOP_DIR/jivvy-life.desktop"
 echo "  icons:    $ICON_ROOT/{32x32,128x128,256x256}/apps/jivvy-life.png"
+
+# Video playback (YouTube etc.) needs system GStreamer codecs; warn but never fail the install.
+if command -v gst-inspect-1.0 >/dev/null 2>&1; then
+  if ! gst-inspect-1.0 fakevideosink >/dev/null 2>&1 || ! gst-inspect-1.0 avdec_h264 >/dev/null 2>&1; then
+    echo "WARNING: Video playback (YouTube etc.) needs: sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav" >&2
+  fi
+fi

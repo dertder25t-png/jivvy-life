@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom';
 import { Pin, Globe, FileText, Plus, X, BookOpen, LayoutDashboard, Folder, FolderOpen, FolderPlus, ChevronRight, ChevronDown, Pencil, Trash2, FolderInput, Columns2, EyeOff, Eye } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
+import { togglePaneMute } from './PaneContainer';
 import { WorkspaceTab, TabFolder } from '../types/workspace';
 import { HamburgerMenu } from './HamburgerMenu';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -19,6 +20,24 @@ const TabIcon: React.FC<{ type: WorkspaceTab['type'] }> = ({ type }) =>
   ) : (
     <Globe className="w-3.5 h-3.5 text-sky-400 shrink-0" />
   );
+
+const AudioBadge: React.FC<{ tabId: string }> = ({ tabId }) => {
+  const a = useWorkspaceStore((s) => s.audioTabs[tabId]);
+  if (!a?.playing) return null;
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        togglePaneMute(tabId);
+      }}
+      title={a.muted ? 'Unmute tab' : 'Mute tab'}
+      aria-label={a.muted ? 'Unmute tab' : 'Mute tab'}
+      className="shrink-0 text-xs leading-none hover:opacity-80"
+    >
+      {a.muted ? '🔇' : '🔊'}
+    </button>
+  );
+};
 
 interface TabRowProps {
   tab: WorkspaceTab;
@@ -51,6 +70,7 @@ const TabRow = React.memo(({ tab, active, compact, lbl, indent, onFocus, onClose
     <div className="flex items-center gap-2 min-w-0">
       <TabIcon type={tab.type} />
       <span className={`truncate min-w-0 ${lbl}`}>{tab.title}</span>
+      <AudioBadge tabId={tab.id} />
     </div>
     <div className={`flex items-center gap-1 shrink-0 ${compact ? lbl : ''}`}>
       <button

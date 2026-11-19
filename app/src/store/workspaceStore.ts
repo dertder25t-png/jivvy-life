@@ -130,6 +130,10 @@ interface WorkspaceState {
   zenBarPosition: ZenBarPosition;
   blockingEnabled: boolean;
   blockingDisabledSites: string[];
+  /** Transient (never persisted): tabs that have produced audio, keyed by tab id. */
+  audioTabs: Record<string, { playing: boolean; muted: boolean }>;
+  setTabAudio: (tabId: string, patch: Partial<{ playing: boolean; muted: boolean }>) => void;
+  clearTabAudio: (tabId: string) => void;
 
   setBlockingEnabled: (v: boolean) => void;
   setBlockingDisabledSites: (v: string[]) => void;
@@ -210,6 +214,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   zenBarPosition: uiPrefs.zenBarPosition,
   blockingEnabled: uiPrefs.blockingEnabled,
   blockingDisabledSites: uiPrefs.blockingDisabledSites,
+  audioTabs: {},
+  setTabAudio: (tabId, patch) =>
+    set((s) => ({ audioTabs: { ...s.audioTabs, [tabId]: { ...(s.audioTabs[tabId] ?? { playing: false, muted: false }), ...patch } } })),
+  clearTabAudio: (tabId) =>
+    set((s) => {
+      if (!(tabId in s.audioTabs)) return s;
+      const { [tabId]: _gone, ...rest } = s.audioTabs;
+      return { audioTabs: rest };
+    }),
 
   setBlockingEnabled: (v) => {
     persistUi(get(), { blockingEnabled: v });
