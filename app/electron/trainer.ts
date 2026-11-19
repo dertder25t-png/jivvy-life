@@ -7,12 +7,14 @@
 import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { PredictionSnapshot } from '../shared/history-types';
-import { appendLog, parseLog, regression, trend } from '../shared/lifeboard/evallog';
+import type { UiSnapshot } from '../shared/history-types';
+import { compactSnapshot, readSnapshotFile, validSnapshot } from './snapshot';
+import { parseLog } from '../shared/lifeboard/evallog';
 import type { EvalLine } from '../shared/lifeboard/evallog';
 import type { BenchResult } from '../shared/lifeboard/bench';
 import type { HistoryStore } from './history';
 import { RETENTION_DAYS } from './history';
+import { lagOp } from './lagmon';
 
 const log = (...a: unknown[]) => console.error('[trainer]', ...a);
 
@@ -23,22 +25,7 @@ export const STARTUP_DELAY_MS = 60_000;
 const TIMEOUT_MS = 120_000;
 const MAX_TIMER = 2 ** 31 - 1;
 
-/** A snapshot read from disk is only trusted if it has the shape the UI relies on. */
-export function validSnapshot(v: unknown): v is PredictionSnapshot {
-  const s = v as PredictionSnapshot | null;
-  return (
-    !!s &&
-    typeof s === 'object' &&
-    s.version === 1 &&
-    Number.isFinite(s.trainedAt) &&
-    Array.isArray(s.sites) &&
-    Array.isArray(s.sequences) &&
-    !!s.aliases &&
-    typeof s.aliases === 'object' &&
-    !!s.hourly &&
-    !!s.weekday
-  );
-}
+export { validSnapshot };
 
 /** Next 03:30 local time strictly after `from`. */
 export function next0330(from: number): number {
@@ -49,8 +36,9 @@ export function next0330(from: number): number {
 }
 
 export class Trainer {
-  snapshot: PredictionSnapshot | null = null;
-  private running: Promise<PredictionSnapshot | null> | null = null;
+  /** The compact snapshot the UI gets (full one lives in predictions.json). */
+  snapshot: UiSnapshot | null = null;
+  private running: Promise<UiSnapshot | null> | null = null;
   private timers: NodeJS.Timeout[] = [];
   readonly file: string;
   readonly evalFile: string;
@@ -58,7 +46,7 @@ export class Trainer {
   constructor(
     private dir: string,
     private history: HistoryStore,
-    private onUpdate: (s: PredictionSnapshot | null) => void,
+    private onUpdate: (s: UiSnapshot | null) => void,
     /** Absolute path of the bundled worker entry. */
     private workerFile: string = path.join(__dirname, 'trainer-worker.js')
   ) {
@@ -66,14 +54,15 @@ export class Trainer {
     this.evalFile = path.join(dir, 'predictions-eval.jsonl');
   }
 
+  /** True while a training run is in flight. */
+  get busy() {
+    return !!this.running;
+  }
+
   /** Read predictions.json (if any). Call once at startup. */
-  load(): PredictionSnapshot | null {
-    try {
-      const v = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      this.snapshot = validSnapshot(v) ? v : null;
-    } catch {
-      this.snapshot = null;
-    }
+  load(): UiSnapshot | null {
+    const full = readSnapshotFile(this.file);
+    this.snapshot = full ? compactSnapshot(full) : null;
     return this.snapshot;
   }
 
@@ -101,8 +90,8 @@ export class Trainer {
     });
   }
 
-  /** Train now. Concurrent calls share one run. Resolves with the new snapshot, or null on failure. */
-  train(forceTune = false): Promise<PredictionSnapshot | null> {
+  /** Train now. Concurrent calls share one run. Resolves with the new compact snapshot, or null on failure. */
+  train(forceTune = false): Promise<UiSnapshot | null> {
     if (this.running) return this.running;
     this.running = this.run(forceTune).finally(() => {
       this.running = null;
@@ -110,43 +99,37 @@ export class Trainer {
     return this.running;
   }
 
-  private async run(forceTune: boolean): Promise<PredictionSnapshot | null> {
+  private async run(forceTune: boolean): Promise<UiSnapshot | null> {
+    const endOp = lagOp('train');
     const now = Date.now();
-    const { visits, typed } = this.history.trainingData(now - RETENTION_DAYS * DAY);
     const t0 = performance.now();
     try {
       // self-tune about once a night (or when asked, e.g. after an import)
       const tune = forceTune || !this.snapshot?.eval || now - this.snapshot.eval.t > STALE_MS;
-      const res = await this.inWorker({ kind: 'train', visits, typed, now, prev: this.snapshot, tune });
-      const snap = res.snapshot;
-      if (!validSnapshot(snap)) throw new Error('bad worker result');
-      if (res.line && snap.eval) {
-        const lines = appendLog(this.readLog(), res.line as EvalLine);
-        this.writeLog(lines);
-        snap.eval.trend = trend(lines, now);
-        const r = regression(lines);
-        if (r.alert) {
-          snap.eval.alert = true;
-          snap.eval.message = r.message;
-        }
-      }
-      this.write(snap);
+      const res = await this.inWorker({ kind: 'train', ...this.job(now), tune });
+      if (!res.ui || !res.summary) throw new Error('bad worker result');
+      const snap = res.ui;
       this.snapshot = snap;
-      log(`trained on ${visits.length} visits, ${typed.length} typed: ${snap.sites.length} sites, ${Object.keys(snap.aliases).length} shortcuts (${Math.round(performance.now() - t0)} ms${snap.eval && tune ? `, tuning ${snap.eval.status} in ${snap.eval.tuneMs} ms` : ''})`);
-      this.onUpdate(snap);
+      const sm = res.summary;
+      log(`trained on ${sm.visits} visits, ${sm.typed} typed: ${sm.sites} sites, ${sm.aliases} shortcuts (${Math.round(performance.now() - t0)} ms${snap.eval && tune ? `, tuning ${snap.eval.status} in ${snap.eval.tuneMs} ms` : ''})`);
+      this.onUpdate(snap); // once per training
       return snap;
     } catch (e) {
       log('training failed:', String(e instanceof Error ? e.message : e).slice(0, 200));
       return null;
+    } finally {
+      endOp();
     }
+  }
+
+  private job(now: number) {
+    return { dbFile: this.history.file, predFile: this.file, evalFile: this.evalFile, since: now - RETENTION_DAYS * DAY, now };
   }
 
   /** Run the search benchmark on the live history (worker thread). Null on failure. */
   async bench(): Promise<BenchResult | null> {
-    const now = Date.now();
-    const { visits, typed } = this.history.trainingData(now - RETENTION_DAYS * DAY);
     try {
-      const res = await this.inWorker({ kind: 'bench', visits, typed, now, prev: this.snapshot });
+      const res = await this.inWorker({ kind: 'bench', ...this.job(Date.now()) });
       return (res.bench as BenchResult) ?? null;
     } catch (e) {
       log('benchmark failed:', String(e instanceof Error ? e.message : e).slice(0, 200));
@@ -154,7 +137,7 @@ export class Trainer {
     }
   }
 
-  /** Lines of predictions-eval.jsonl (the Settings sparkline reads this through the snapshot's neighbours). */
+  /** Lines of predictions-eval.jsonl (the Settings sparkline). */
   readLog(): EvalLine[] {
     try {
       return parseLog(fs.readFileSync(this.evalFile, 'utf8'));
@@ -163,15 +146,7 @@ export class Trainer {
     }
   }
 
-  private writeLog(lines: EvalLine[]) {
-    fs.mkdirSync(this.dir, { recursive: true });
-    const tmp = `${this.evalFile}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', { mode: 0o600 });
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, this.evalFile);
-  }
-
-  private inWorker(job: unknown): Promise<{ snapshot?: PredictionSnapshot; line?: unknown; bench?: unknown }> {
+  private inWorker(job: unknown): Promise<WorkerResult> {
     return new Promise((resolve, reject) => {
       const w = new Worker(this.workerFile, { workerData: job });
       const timer = setTimeout(() => {
@@ -186,26 +161,17 @@ export class Trainer {
         void w.terminate();
         fn();
       };
-      w.once('message', (m: { ok: boolean; snapshot?: PredictionSnapshot; line?: unknown; bench?: unknown; error?: string }) =>
-        done(() => (m.ok ? resolve(m) : reject(new Error(m.error || 'bad worker result'))))
-      );
+      w.once('message', (m: WorkerResult) => done(() => (m.ok ? resolve(m) : reject(new Error(m.error || 'bad worker result')))));
       w.once('error', (e) => done(() => reject(e)));
       w.once('exit', (code) => done(() => reject(new Error(`worker exited (${code})`))));
     });
   }
+}
 
-  /** temp file (0600) + fsync + rename, so a crash never leaves a half-written snapshot. */
-  private write(snap: PredictionSnapshot) {
-    fs.mkdirSync(this.dir, { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    const fd = fs.openSync(tmp, 'w', 0o600);
-    try {
-      fs.writeFileSync(fd, JSON.stringify(snap));
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, this.file);
-  }
+interface WorkerResult {
+  ok: boolean;
+  ui?: UiSnapshot;
+  summary?: { visits: number; typed: number; sites: number; aliases: number; ms: number };
+  bench?: unknown;
+  error?: string;
 }

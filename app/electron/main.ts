@@ -11,11 +11,12 @@ import { TabManager } from './tabs';
 import { Blocker } from './blocker';
 import { HistoryStore } from './history';
 import { Trainer } from './trainer';
+import { lagOp, startLagMon } from './lagmon';
 import { runSelfTest } from './selftest';
 import { Logins } from './logins';
 import { readBrief, openPath } from './native';
 import { validateAction, INTERNAL_ACTIONS, isAllowedTabUrl, type Action, type PersistedState } from '../shared/state';
-import { CH, HOVER_KINDS, BLUR_KINDS, type SuggestItem, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent } from '../shared/ipc';
+import { CH, HOVER_KINDS, BLUR_KINDS, type SuggestItem, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent, type ImportStatus } from '../shared/ipc';
 import { LAYOUT, addressBarRect, chromeInsets, cubicBezier, edgeStripRect, pageRects, type Rect } from '../shared/layout';
 
 const log = (...a: unknown[]) => console.error('[jivvy]', ...a);
@@ -660,13 +661,20 @@ function registerIpc() {
   });
   ipcMain.handle(CH.historyImportFirefox, async (e) => {
     if (!isFromUi(e)) return { state: 'error', imported: 0, skipped: 0, error: 'Rejected' };
+    // One heavy job at a time: a click while an import or a retrain runs is ignored.
+    if (history.isImporting) return history.importStatus();
+    if (trainer.busy) return { state: 'error', imported: 0, skipped: 0, error: 'Busy retraining, try again in a moment' } satisfies ImportStatus;
     const st = await history.importFirefox();
     if (st.state === 'done') void trainer.train(true);
     return st;
   });
   ipcMain.handle(CH.predictions, (e) => (isFromUi(e) ? trainer.snapshot : null));
-  ipcMain.handle(CH.predictionsTrain, (e) => (isFromUi(e) ? trainer.train(true) : null));
-  ipcMain.handle(CH.predictionsBench, (e) => (isFromUi(e) ? trainer.bench() : null));
+  ipcMain.handle(CH.predictionsTrain, (e) => {
+    if (!isFromUi(e)) return null;
+    if (history.isImporting) return trainer.snapshot; // retrain follows the import automatically
+    return trainer.train(true); // joins a run already in flight
+  });
+  ipcMain.handle(CH.predictionsBench, (e) => (isFromUi(e) && !history.isImporting ? trainer.bench() : null));
   ipcMain.handle(CH.predictionsEvalLog, (e) => (isFromUi(e) ? trainer.readLog() : []));
   ipcMain.handle(CH.historyImportStatus, (e) => (isFromUi(e) ? history.importStatus() : { state: 'idle', imported: 0, skipped: 0 }));
   ipcMain.on(CH.setMuted, (e, tabId, muted) => {
@@ -833,11 +841,15 @@ if (!app.requestSingleInstanceLock()) {
     log('electron', process.versions.electron, 'chrome', process.versions.chrome, 'userData', app.getPath('userData'));
     app.userAgentFallback = cleanUserAgent(app.userAgentFallback);
     Menu.setApplicationMenu(null);
+    if (process.env.JIVVY_LAGMON === '1') startLagMon();
     store = new StateStore(app.getPath('userData'));
     store.onChange(onStoreChange);
     history = new HistoryStore(app.getPath('userData'), () => store.state.saveHistory);
     trainer = new Trainer(app.getPath('userData'), history, (snap) => {
       for (const wc of uiContents()) wc.send(CH.predictionsUpdated, snap);
+    });
+    history.onImportStatus((st) => {
+      for (const wc of uiContents()) wc.send(CH.historyImportStatus, st);
     });
     trainer.load();
     // The self-test trains on demand against its scratch profile; no background schedule there.

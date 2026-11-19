@@ -24,6 +24,7 @@ const entries = [
   { entryPoints: [path.join(root, 'electron/preload.ts')], outfile: path.join(outDir, 'preload.js') },
   // worker_threads entry for the nightly trainer (electron/trainer.ts spawns dist-electron/trainer-worker.js)
   { entryPoints: [path.join(root, 'electron/trainer-worker.ts')], outfile: path.join(outDir, 'trainer-worker.js') },
+  { entryPoints: [path.join(root, 'electron/history-import-worker.ts')], outfile: path.join(outDir, 'history-import-worker.js') },
 ];
 
 /**

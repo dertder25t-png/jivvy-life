@@ -2,11 +2,13 @@
 // (node:sqlite, WAL, mode 0600). Recording is driven by hooks in tabs.ts; the UI reads it through
 // validated IPC (see main.ts). Nothing here ever touches the network.
 import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Transition, TypedInput, Visit } from '../shared/history-types';
 import type { HistoryHit, ImportStatus } from '../shared/ipc';
+import { lagOp } from './lagmon';
 
 const log = (...a: unknown[]) => console.error('[history]', ...a);
 
@@ -93,9 +95,13 @@ export class HistoryStore {
   private skip = new Set<string>();
   private importing = false;
   private status: ImportStatus = { state: 'idle', imported: 0, skipped: 0 };
+  private statusListener: ((s: ImportStatus) => void) | null = null;
+  /** history.sqlite (trainer / import worker threads open their own connections to it). */
+  readonly file: string;
 
   /** `enabled` is read on every write, so toggling the setting takes effect immediately. */
-  constructor(private dir: string, private enabled: () => boolean) {
+  constructor(private dir: string, private enabled: () => boolean, private importWorkerFile: string = path.join(__dirname, 'history-import-worker.js')) {
+    this.file = path.join(dir, 'history.sqlite');
     try {
       fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, 'history.sqlite');
@@ -105,6 +111,7 @@ export class HistoryStore {
       this.db = new DatabaseSync(file);
       this.db.exec(`
         PRAGMA journal_mode = WAL;
+        PRAGMA busy_timeout = 5000;
         PRAGMA synchronous = NORMAL;
         CREATE TABLE IF NOT EXISTS visits (
           id INTEGER PRIMARY KEY,
@@ -391,18 +398,7 @@ export class HistoryStore {
 
   /** Everything the nightly trainer needs: visits and typed inputs since `sinceT` (epoch ms), oldest first. */
   trainingData(sinceT: number): { visits: Visit[]; typed: TypedInput[] } {
-    return this.guard(
-      'training data',
-      (db) => ({
-        visits: (db.prepare('SELECT url, host, path, title, t, transition, query, engine, dwell_ms FROM visits WHERE t >= ? ORDER BY t').all(sinceT) as Array<Record<string, unknown>>).map(rowToVisit),
-        typed: (db.prepare('SELECT text, url, shown_url, accepted, t FROM typed_inputs WHERE t >= ? ORDER BY t').all(sinceT) as Array<Record<string, unknown>>).map((r) => {
-          const ti: TypedInput = { text: String(r.text), url: String(r.url ?? ''), accepted: Number(r.accepted) === 1, t: Number(r.t) };
-          if (r.shown_url) ti.shownUrl = String(r.shown_url);
-          return ti;
-        }),
-      }),
-      { visits: [], typed: [] }
-    );
+    return this.guard('training data', (db) => readTrainingData(db, sinceT), { visits: [], typed: [] });
   }
 
   /** Row counts, for tests and diagnostics. */
@@ -434,9 +430,20 @@ export class HistoryStore {
     return [path.join(home, '.mozilla', 'firefox'), path.join(home, 'snap', 'firefox', 'common', '.mozilla', 'firefox')];
   }
 
+  /** Called (throttled to <= 4/s while running, immediately when finished) with import progress. */
+  onImportStatus(cb: ((s: ImportStatus) => void) | null) {
+    this.statusListener = cb;
+  }
+
+  get isImporting() {
+    return this.importing;
+  }
+
   /**
-   * Import the last 180 days from Firefox's places.sqlite. Works on a COPY in a private temp dir;
-   * the live profile is never opened. `roots` is for tests only (never reachable from IPC).
+   * Import the last 180 days from Firefox's places.sqlite. A worker thread copies the file to a
+   * private temp dir, reads the copy and writes batches into history.sqlite over its own connection
+   * (WAL), so the main thread never blocks. The live profile is never opened. `roots` is for tests
+   * only (never reachable from IPC).
    */
   async importFirefox(roots: string[] = HistoryStore.defaultFirefoxRoots()): Promise<ImportStatus> {
     if (this.importing) return this.importStatus();
@@ -445,76 +452,65 @@ export class HistoryStore {
       return this.importStatus();
     }
     this.importing = true;
+    const endOp = lagOp('import');
     this.status = { state: 'running', imported: 0, skipped: 0 };
-    let tmp = '';
-    try {
-      const profile = findFirefoxProfile(roots);
-      if (!profile) throw new Error('No Firefox profile with history found');
-      tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jivvy-ffimport-'));
-      const copy = path.join(tmp, 'places.sqlite');
-      fs.copyFileSync(path.join(profile, 'places.sqlite'), copy);
-      const wal = path.join(profile, 'places.sqlite-wal');
-      if (fs.existsSync(wal)) fs.copyFileSync(wal, copy + '-wal');
-      let src: DatabaseSync;
+    let lastEmit = 0;
+    const emit = (force: boolean) => {
+      const now = Date.now();
+      if (!force && now - lastEmit < 250) return;
+      lastEmit = now;
       try {
-        src = new DatabaseSync(copy, { readOnly: true });
-        src.prepare('SELECT 1 FROM moz_places LIMIT 1').get();
+        this.statusListener?.(this.importStatus());
       } catch {
-        // A read-only handle can't replay a WAL; our copy is disposable, so open it normally.
-        src = new DatabaseSync(copy);
+        /* listener must not break the import */
       }
-      try {
-        const cutoffUs = (Date.now() - RETENTION_DAYS * DAY) * 1000;
-        const rows = src
-          .prepare(
-            `SELECT p.url AS url, p.title AS title, v.visit_date AS d, v.visit_type AS vt
-             FROM moz_historyvisits v JOIN moz_places p ON p.id = v.place_id
-             WHERE v.visit_date >= ? AND v.visit_type != 9 AND (p.url LIKE 'http://%' OR p.url LIKE 'https://%')
-             ORDER BY v.visit_date`
-          )
-          .all(cutoffUs) as Array<{ url: string; title: string | null; d: number; vt: number }>;
-        const ins = this.db.prepare('INSERT OR IGNORE INTO visits (url, host, path, title, t, transition, query, engine) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-        let imported = 0;
-        let skipped = 0;
-        const BATCH = 2000;
-        for (let i = 0; i < rows.length; i += BATCH) {
-          this.db.exec('BEGIN');
-          try {
-            for (const r of rows.slice(i, i + BATCH)) {
-              const p = parseVisitUrl(r.url);
-              if (!p || !Number.isFinite(Number(r.d))) {
-                skipped++;
-                continue;
-              }
-              const transition: Transition = p.engine ? 'search' : r.vt === 2 ? 'typed' : 'link';
-              const res = ins.run(p.url, p.host, p.path, (r.title || '').slice(0, 300), Math.floor(Number(r.d) / 1000), transition, p.query ?? null, p.engine ?? null);
-              if (res.changes) imported++;
-              else skipped++;
-            }
-            this.db.exec('COMMIT');
-          } catch (e) {
-            this.db.exec('ROLLBACK');
-            throw e;
-          }
-          this.status = { state: 'running', imported, skipped };
-          await new Promise((r) => setImmediate(r)); // let the app breathe between batches
-        }
-        this.status = { state: 'done', imported, skipped, at: Date.now() };
-      } finally {
-        try {
-          src.close();
-        } catch {
-          /* ignore */
-        }
-      }
+    };
+    emit(true);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const w = new Worker(this.importWorkerFile, { workerData: { dbFile: this.file, roots, cutoffMs: Date.now() - RETENTION_DAYS * DAY } });
+        let settled = false;
+        const timer = setTimeout(() => fin(() => reject(new Error('import timed out'))), 10 * 60_000);
+        const fin = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          void w.terminate();
+          fn();
+        };
+        w.on('message', (m: { type: 'progress' | 'done' | 'error'; imported?: number; skipped?: number; error?: string }) => {
+          if (m.type === 'progress') {
+            this.status = { state: 'running', imported: m.imported ?? 0, skipped: m.skipped ?? 0 };
+            emit(false);
+          } else if (m.type === 'done') {
+            this.status = { state: 'done', imported: m.imported ?? 0, skipped: m.skipped ?? 0, at: Date.now() };
+            fin(resolve);
+          } else fin(() => reject(new Error(m.error || 'import failed')));
+        });
+        w.once('error', (e) => fin(() => reject(e)));
+        w.once('exit', (code) => fin(() => reject(new Error(`import worker exited (${code})`))));
+      });
     } catch (e) {
       this.status = { state: 'error', imported: this.status.imported, skipped: this.status.skipped, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
     } finally {
-      if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
       this.importing = false;
+      endOp();
+      emit(true);
     }
     return this.importStatus();
   }
+}
+
+/** Visits and typed inputs since `sinceT` (epoch ms), oldest first. Used by main and the trainer worker. */
+export function readTrainingData(db: DatabaseSync, sinceT: number): { visits: Visit[]; typed: TypedInput[] } {
+  return {
+    visits: (db.prepare('SELECT url, host, path, title, t, transition, query, engine, dwell_ms FROM visits WHERE t >= ? ORDER BY t').all(sinceT) as Array<Record<string, unknown>>).map(rowToVisit),
+    typed: (db.prepare('SELECT text, url, shown_url, accepted, t FROM typed_inputs WHERE t >= ? ORDER BY t').all(sinceT) as Array<Record<string, unknown>>).map((r) => {
+      const ti: TypedInput = { text: String(r.text), url: String(r.url ?? ''), accepted: Number(r.accepted) === 1, t: Number(r.t) };
+      if (r.shown_url) ti.shownUrl = String(r.shown_url);
+      return ti;
+    }),
+  };
 }
 
 function rowToVisit(r: Record<string, unknown>): Visit {

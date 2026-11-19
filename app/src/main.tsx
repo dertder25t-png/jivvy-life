@@ -6,6 +6,7 @@ import { LAYOUT } from '../shared/layout';
 import { telemetryService } from './services/telemetryService';
 import { jivvy, isElectron, isOverlayRole, isEdgeRole } from './platform';
 import { bootstrapElectronStore } from './store/workspaceStore';
+import { installLagMonitor } from './lib/lagmon';
 
 async function start() {
   if (isEdgeRole) {
@@ -22,6 +23,7 @@ async function start() {
     return;
   }
   if (isElectron) {
+    installLagMonitor();
     document.documentElement.classList.add('electron');
     if (isOverlayRole) document.documentElement.classList.add('overlay');
     // Main -> UI events (e.g. Ctrl+L pressed inside a page) as window events for components.

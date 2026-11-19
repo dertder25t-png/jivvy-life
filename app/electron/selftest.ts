@@ -15,6 +15,7 @@ import { session as electronSession, safeStorage } from 'electron';
 import { Logins } from './logins';
 import { insideHome } from './native';
 import os from 'node:os';
+import { lagStats, resetLag, startLagMon } from './lagmon';
 import type { RuntimeState } from '../shared/ipc';
 import { pageRects, type LayoutInput, type Rect } from '../shared/layout';
 import type { LayoutMode } from '../shared/layout';
@@ -54,6 +55,32 @@ async function waitFor(cond: () => boolean | Promise<boolean>, timeout = 10000, 
 const rectEq = (a: Rect | null | undefined, b: Rect | null | undefined, tol = 1) =>
   !!a && !!b && Math.abs(a.x - b.x) <= tol && Math.abs(a.y - b.y) <= tol && Math.abs(a.width - b.width) <= tol && Math.abs(a.height - b.height) <= tol;
 const fmt = (r: Rect | null | undefined) => (r ? `${r.x},${r.y} ${r.width}x${r.height}` : 'none');
+
+
+/** A fake Firefox profile (root + profiles.ini + places.sqlite) with `nVisits` visits spread over the last 170 days. */
+function makeFakeFirefox(ffRoot: string, nVisits: number, nPlaces = Math.round(nVisits / 5)) {
+  const prof = path.join(ffRoot, 'lag.default-release');
+  fs.rmSync(ffRoot, { recursive: true, force: true });
+  fs.mkdirSync(prof, { recursive: true });
+  fs.writeFileSync(path.join(ffRoot, 'profiles.ini'), '[Profile0]\nName=default-release\nIsRelative=1\nPath=lag.default-release\nDefault=1\n\n[General]\nStartWithLastProfile=1\n');
+  const db = new DatabaseSync(path.join(prof, 'places.sqlite'));
+  db.exec(`CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR);
+    CREATE TABLE moz_historyvisits (id INTEGER PRIMARY KEY, from_visit INTEGER, place_id INTEGER, visit_date INTEGER, visit_type INTEGER);`);
+  let seed = 12345;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  db.exec('BEGIN');
+  const insP = db.prepare('INSERT INTO moz_places VALUES (?, ?, ?)');
+  for (let i = 1; i <= nPlaces; i++) insP.run(i, `https://site${i % 700}.lagtest.example/p/${i}?x=${i % 7}`, `Lag test page ${i} of site ${i % 700}`);
+  const insV = db.prepare('INSERT INTO moz_historyvisits (place_id, visit_date, visit_type) VALUES (?, ?, ?)');
+  const now = Date.now();
+  for (let i = 0; i < nVisits; i++) {
+    const place = 1 + Math.floor(Math.pow(rnd(), 2) * nPlaces);
+    const t = now - Math.floor(rnd() * 170 * 86_400_000) - i; // distinct ms
+    insV.run(place, t * 1000, rnd() < 0.1 ? 2 : 1);
+  }
+  db.exec('COMMIT');
+  db.close();
+}
 
 export async function runSelfTest(ctx: TestCtx) {
   const { store, tabs, runtime } = ctx;
@@ -588,6 +615,50 @@ export async function runSelfTest(ctx: TestCtx) {
       }
       await dispatch({ type: 'focusTab', tabId: primary });
       await sleep(300);
+    }
+
+
+    // ---- 12c. no UI freeze: 20k-visit Firefox import + "Retrain now" with the lag monitors on ----
+    {
+      startLagMon();
+      const ffRoot = path.join(ctx.app.getPath('userData'), 'fake-firefox-lag');
+      const t0 = Date.now();
+      makeFakeFirefox(ffRoot, 20_000);
+      info('lag', `fake profile with 20000 visits built in ${Date.now() - t0} ms`);
+      await ui(`window.jivvy.overlayOpen({ kind: 'settings' })`);
+      await waitFor(() => runtime.overlay?.kind === 'settings' && !!ctx.overlayRect(), 4000);
+      const ov = () => ctx.overlay()!.webContents;
+      await waitFor(() => ov().executeJavaScript(`!!document.querySelector('[data-action="retrain"]')`), 4000);
+      const views = () => [base(), ov()];
+      for (const v of views()) await v.executeJavaScript(`window.__jivvyLagStart && window.__jivvyLagStart(); window.__jivvyLagReset && window.__jivvyLagReset()`);
+      await sleep(500);
+      for (const v of views()) await v.executeJavaScript(`window.__jivvyLagReset()`);
+      resetLag();
+      const trainedBefore = ctx.trainer.snapshot?.trainedAt ?? 0;
+      const tImp = Date.now();
+      const ir = await ctx.history.importFirefox([ffRoot]);
+      const impMs = Date.now() - tImp;
+      result(ir.state === 'done' && ir.imported > 15_000, 'lag: 20k Firefox import completes', `${ir.state}, ${ir.imported} imported, ${ir.skipped} skipped, ${impMs} ms`);
+      // click "Retrain now" in the Settings overlay (the real UI path)
+      await ov().executeJavaScript(`document.querySelector('[data-action="retrain"]').click()`);
+      const tTr = Date.now();
+      const trained = await waitFor(() => (ctx.trainer.snapshot?.trainedAt ?? 0) > trainedBefore, 60_000, 100);
+      result(trained, 'lag: Retrain now produces a new snapshot', `${Date.now() - tTr} ms, ${ctx.trainer.snapshot?.sites.length} sites`);
+      await sleep(1500); // let the UI views receive + render the snapshot
+      const ms = lagStats();
+      const gaps = await Promise.all(views().map((v) => v.executeJavaScript(`window.__jivvyLag()`) as Promise<{ maxGap: number; frames: number; gaps: Array<{ ms: number }> }>));
+      const rmax = Math.max(...gaps.map((g) => g.maxGap));
+      info('lag', `main max stall ${ms.maxStall} ms; renderer max frame gap base ${Math.round(gaps[0].maxGap)} ms (${gaps[0].frames} frames), overlay ${Math.round(gaps[1].maxGap)} ms (${gaps[1].frames} frames); stalls ${JSON.stringify(ms.stalls)}`);
+      result(ms.maxStall < 100, 'lag: main-process stall < 100 ms during import + retrain', `${ms.maxStall} ms`);
+      result(gaps.every((g) => g.frames > 10) && rmax < 200, 'lag: renderer frame gap < 200 ms during import + retrain', `${Math.round(rmax)} ms`);
+      const uiSnap = await ui<{ sites: unknown[]; weekday?: unknown; stats: { sites: number } } | null>(`window.jivvy.predictions()`);
+      result(!!uiSnap && uiSnap.sites.length <= 2000 && !('weekday' in uiSnap) && (uiSnap.stats?.sites ?? 0) >= uiSnap.sites.length, 'lag: UI gets a compact snapshot (sites capped, no weekday)', `${uiSnap?.sites.length} of ${uiSnap?.stats?.sites} sites`);
+      // concurrent clicks are ignored
+      const again = await Promise.all([ctx.trainer.train(true), ctx.trainer.train(true)]);
+      result(again[0] === again[1] || (!!again[0] && !!again[1] && again[0].trainedAt === again[1].trainedAt), 'lag: concurrent retrains share one run');
+      await ui(`window.jivvy.overlayClose()`);
+      await waitFor(() => !ctx.overlayAttached(), 2000);
+      fs.rmSync(ffRoot, { recursive: true, force: true });
     }
 
     // ---- 13. persistence ----

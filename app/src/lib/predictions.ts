@@ -4,15 +4,15 @@
 import { useSyncExternalStore } from 'react';
 import { complete, decide, DEFAULT_CONFIG } from '../../shared/lifeboard';
 import type { Completion, Decision } from '../../shared/lifeboard';
-import type { PredictionSnapshot, Visit } from '../../shared/history-types';
+import type { UiSnapshot, Visit } from '../../shared/history-types';
 import { jivvy } from '../platform';
 import { codeDecision, type CodeMode, type DashCls, type DashDecision, type RouteId } from './router';
 
-let snapshot: PredictionSnapshot | null = null;
+let snapshot: UiSnapshot | null = null;
 const subs = new Set<() => void>();
 let started = false;
 
-function set(s: PredictionSnapshot | null) {
+function set(s: UiSnapshot | null) {
   snapshot = s;
   subs.forEach((f) => f());
 }
@@ -24,12 +24,12 @@ function start() {
   void jivvy.predictions().then(set, () => undefined);
 }
 
-export function getPredictions(): PredictionSnapshot | null {
+export function getPredictions(): UiSnapshot | null {
   start();
   return snapshot;
 }
 
-export function usePredictions(): PredictionSnapshot | null {
+export function usePredictions(): UiSnapshot | null {
   start();
   return useSyncExternalStore(
     (f) => {
@@ -41,11 +41,11 @@ export function usePredictions(): PredictionSnapshot | null {
 }
 
 /** Router decision with the learned shortcuts and classifier. */
-export function route(text: string, snap: PredictionSnapshot | null = getPredictions()): Decision | null {
+export function route(text: string, snap: UiSnapshot | null = getPredictions()): Decision | null {
   return decide(text, DEFAULT_CONFIG, snap);
 }
 
-export function suggest(text: string, snap: PredictionSnapshot | null = getPredictions(), recent?: Visit[]): Completion {
+export function suggest(text: string, snap: UiSnapshot | null = getPredictions(), recent?: Visit[]): Completion {
   return complete(text, snap, recent);
 }
 

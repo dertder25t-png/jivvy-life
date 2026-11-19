@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { X, Database } from 'lucide-react';
 import { nativeInvoke as invoke, isTauri, isNative, isElectron, jivvy } from '../platform';
 import { usePredictions } from '../lib/predictions';
@@ -23,8 +24,10 @@ const Toggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean)
 );
 
 export const SettingsModal: React.FC = () => {
-  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, saveHistory, setSaveHistory, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar, showFolders, setShowFolders, zenBarPosition, setZenBarPosition, blockingEnabled, setBlockingEnabled, blockingDisabledSites, setBlockingDisabledSites } =
-    useWorkspaceStore();
+  // Pick only what this modal shows (a bare useWorkspaceStore() re-renders on every store patch).
+  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, saveHistory, setSaveHistory, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar, showFolders, setShowFolders, zenBarPosition, setZenBarPosition, blockingEnabled, setBlockingEnabled, blockingDisabledSites, setBlockingDisabledSites } = useWorkspaceStore(
+    useShallow((st) => ({ settingsModalOpen: st.settingsModalOpen, setSettingsModalOpen: st.setSettingsModalOpen, showTopBar: st.showTopBar, setShowTopBar: st.setShowTopBar, saveHistory: st.saveHistory, setSaveHistory: st.setSaveHistory, clearTabsOnStart: st.clearTabsOnStart, setClearTabsOnStart: st.setClearTabsOnStart, autoHideAddressBar: st.autoHideAddressBar, setAutoHideAddressBar: st.setAutoHideAddressBar, showFolders: st.showFolders, setShowFolders: st.setShowFolders, zenBarPosition: st.zenBarPosition, setZenBarPosition: st.setZenBarPosition, blockingEnabled: st.blockingEnabled, setBlockingEnabled: st.setBlockingEnabled, blockingDisabledSites: st.blockingDisabledSites, setBlockingDisabledSites: st.setBlockingDisabledSites }))
+  );
   const [baseUrl, setBaseUrl] = useState(getApiBase());
   const [session, setSessionState] = useState<Session | null>(getSession());
   const [syncStatus, setSyncStatusState] = useState<SyncStatus>(getSyncStatus());
@@ -136,55 +139,66 @@ export const SettingsModal: React.FC = () => {
 
   const snap = usePredictions();
   const [histMsg, setHistMsg] = useState('');
-  const [importing, setImporting] = useState(false);
-  const [training, setTraining] = useState(false);
+  // One heavy job at a time (import, retrain, benchmark): every button shows "Working…" and clicks are ignored.
+  const [op, setOp] = useState<null | 'import' | 'train' | 'bench'>(null);
+  const opRef = React.useRef<typeof op>(null);
+  const begin = (o: NonNullable<typeof op>) => {
+    if (opRef.current) return false;
+    opRef.current = o;
+    setOp(o);
+    return true;
+  };
+  const end = () => {
+    opRef.current = null;
+    setOp(null);
+  };
+  useEffect(() => {
+    // Main pushes import progress (<= 4/s); no polling.
+    if (!jivvy) return;
+    return jivvy.onHistoryImportStatus((s: ImportStatus) => {
+      if (s.state === 'running') setHistMsg(`Importing… ${s.imported.toLocaleString()} visits so far`);
+    });
+  }, []);
   const importFirefox = async () => {
-    if (!jivvy || importing) return;
-    setImporting(true);
+    if (!jivvy || !begin('import')) return;
     setHistMsg('Importing Firefox history…');
-    // The invoke resolves when the import is done; meanwhile ask for progress.
-    const poll = window.setInterval(() => {
-      void jivvy!.historyImportStatus().then((s: ImportStatus) => s.state === 'running' && setHistMsg(`Importing… ${s.imported.toLocaleString()} visits so far`)).catch(() => undefined);
-    }, 400);
     try {
       const r = await jivvy.historyImportFirefox();
-      setHistMsg(
-        r.state === 'done' ? `Imported ${r.imported.toLocaleString()} visits (${r.skipped.toLocaleString()} skipped). Retraining suggestions…` : `Import failed: ${r.error || 'unknown error'}`
-      );
+      if (r.state === 'done') {
+        setHistMsg(`Imported ${r.imported.toLocaleString()} visits (${r.skipped.toLocaleString()} skipped). Retraining suggestions…`);
+        await jivvy.predictionsTrain(); // joins the retrain main started after the import
+        setHistMsg(`Imported ${r.imported.toLocaleString()} visits (${r.skipped.toLocaleString()} skipped). Suggestions retrained.`);
+      } else setHistMsg(`Import failed: ${r.error || 'unknown error'}`);
     } catch (e) {
       setHistMsg(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      window.clearInterval(poll);
-      setImporting(false);
+      end();
     }
   };
   const retrain = async () => {
-    if (!jivvy || training) return;
-    setTraining(true);
+    if (!jivvy || !begin('train')) return;
     setHistMsg('Training…');
     try {
       setHistMsg((await jivvy.predictionsTrain()) ? 'Trained.' : 'Training failed. See the log.');
     } finally {
-      setTraining(false);
+      end();
     }
   };
   const [bench, setBench] = useState<BenchResult | null>(null);
-  const [benching, setBenching] = useState(false);
   const [evalLog, setEvalLog] = useState<EvalLine[]>([]);
   useEffect(() => {
     if (!jivvy || !settingsModalOpen) return;
     void jivvy.predictionsEvalLog().then(setEvalLog, () => undefined);
   }, [settingsModalOpen, snap?.trainedAt]);
   const runBench = async () => {
-    if (!jivvy || benching) return;
-    setBenching(true);
+    if (!jivvy || !begin('bench')) return;
     setHistMsg('Running search benchmark…');
     try {
       const r = await jivvy.predictionsBench();
       setBench(r);
       setHistMsg(r ? '' : 'Benchmark failed. See the log.');
     } finally {
-      setBenching(false);
+      end();
     }
   };
   const clearHistory = async (range: HistoryClearRange) => {
@@ -344,18 +358,18 @@ export const SettingsModal: React.FC = () => {
             <Toggle label="Save browsing history" checked={saveHistory} onChange={setSaveHistory} />
             <p className="text-xs text-zinc-500">Kept only on this computer. It powers address suggestions and shortcuts.</p>
             <div className="flex flex-wrap gap-2">
-              <button disabled={importing} onClick={() => void importFirefox()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
-                Import Firefox history
+              <button data-action="import" disabled={!!op} onClick={() => void importFirefox()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
+                {op ? 'Working…' : 'Import Firefox history'}
               </button>
-              <button disabled={training} onClick={() => void retrain()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
-                Retrain now
+              <button data-action="retrain" disabled={!!op} onClick={() => void retrain()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
+                {op ? 'Working…' : 'Retrain now'}
               </button>
-              <button disabled={benching} onClick={() => void runBench()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
-                Run search benchmark
+              <button data-action="bench" disabled={!!op} onClick={() => void runBench()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
+                {op ? 'Working…' : 'Run search benchmark'}
               </button>
             </div>
             <p className="text-xs text-zinc-400" data-last-trained>
-              {snap ? `Last trained: ${new Date(snap.trainedAt).toLocaleString()}, ${snap.sites.length.toLocaleString()} sites, ${Object.keys(snap.aliases).length.toLocaleString()} shortcuts` : 'Not trained yet.'}
+              {snap ? `Last trained: ${new Date(snap.trainedAt).toLocaleString()}, ${snap.stats.sites.toLocaleString()} sites, ${snap.stats.aliases.toLocaleString()} shortcuts` : 'Not trained yet.'}
             </p>
             <SearchAccuracy ev={snap?.eval} log={evalLog} />
             {bench && <BenchTable r={bench} />}
@@ -477,7 +491,7 @@ function Sparkline({ values }: { values: number[] }) {
   );
 }
 
-function SearchAccuracy({ ev, log }: { ev?: SnapshotEval; log: EvalLine[] }) {
+const SearchAccuracy = React.memo(function SearchAccuracy({ ev, log }: { ev?: SnapshotEval; log: EvalLine[] }) {
   if (!ev) return <p className="text-xs text-zinc-500">Search accuracy: not measured yet.</p>;
   const m = ev.metrics;
   const nights = nightly(log).slice(-14).map((x) => x.v);
@@ -498,9 +512,9 @@ function SearchAccuracy({ ev, log }: { ev?: SnapshotEval; log: EvalLine[] }) {
       <Sparkline values={nights} />
     </div>
   );
-}
+});
 
-function BenchTable({ r }: { r: BenchResult }) {
+const BenchTable = React.memo(function BenchTable({ r }: { r: BenchResult }) {
   const pc = (x: number) => `${Math.round(x * 100)}%`;
   return (
     <div className="space-y-1" data-bench-table>
@@ -531,4 +545,4 @@ function BenchTable({ r }: { r: BenchResult }) {
       </p>
     </div>
   );
-}
+});

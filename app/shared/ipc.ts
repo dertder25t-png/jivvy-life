@@ -3,7 +3,7 @@
 
 import type { Action, PersistedState } from './state';
 import type { Rect } from './layout';
-import type { PredictionSnapshot, TypedInput, Visit } from './history-types';
+import type { TypedInput, UiSnapshot, Visit } from './history-types';
 import type { BenchResult } from './lifeboard/bench';
 import type { EvalLine } from './lifeboard/evallog';
 
@@ -113,12 +113,14 @@ export interface JivvyApi {
   /** Opt-in, one shot: copy Firefox's history into the local store. Settings button calls this. */
   historyImportFirefox(): Promise<ImportStatus>;
   historyImportStatus(): Promise<ImportStatus>;
+  /** Throttled (<= 4/s) push of import progress while an import runs. */
+  onHistoryImportStatus(cb: (s: ImportStatus) => void): () => void;
   /** The latest nightly prediction snapshot (null until the first training run). */
-  predictions(): Promise<PredictionSnapshot | null>;
+  predictions(): Promise<UiSnapshot | null>;
   /** Fires whenever a new snapshot is written (or history was cleared and the snapshot rebuilt). */
-  onPredictions(cb: (s: PredictionSnapshot | null) => void): () => void;
+  onPredictions(cb: (s: UiSnapshot | null) => void): () => void;
   /** Retrain now (worker thread). Resolves with the new snapshot, or null if training failed. */
-  predictionsTrain(): Promise<PredictionSnapshot | null>;
+  predictionsTrain(): Promise<UiSnapshot | null>;
   /** Run the search benchmark on the live history (worker thread). Null on failure. */
   predictionsBench(): Promise<BenchResult | null>;
   /** Recent nightly self-evaluation lines (oldest first), for the Settings sparkline. */

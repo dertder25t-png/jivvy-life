@@ -27,6 +27,7 @@ const api: JivvyApi = {
   historyClear: (range) => ipcRenderer.invoke(CH.historyClear, range),
   historyImportFirefox: () => ipcRenderer.invoke(CH.historyImportFirefox),
   historyImportStatus: () => ipcRenderer.invoke(CH.historyImportStatus),
+  onHistoryImportStatus: (cb) => listen(CH.historyImportStatus, cb),
   predictions: () => ipcRenderer.invoke(CH.predictions),
   onPredictions: (cb) => listen(CH.predictionsUpdated, cb),
   predictionsTrain: () => ipcRenderer.invoke(CH.predictionsTrain),

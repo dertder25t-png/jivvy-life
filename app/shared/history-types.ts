@@ -79,6 +79,13 @@ export interface SnapshotEval {
 }
 
 /** Output of nightly training: one JSON snapshot loaded at startup. */
+/** What the UI views need from a snapshot (complete()/decide()): a few fields, capped site list. */
+export interface UiSnapshot extends Omit<PredictionSnapshot, 'sites' | 'weekday'> {
+  sites: { url: string; host: string; title: string; score: number }[];
+  /** Totals in the full snapshot (the UI list is capped). */
+  stats: { sites: number; aliases: number };
+}
+
 export interface PredictionSnapshot {
   version: 1;
   trainedAt: number;

@@ -1,7 +1,7 @@
 // Inline autocomplete for the address box (new; Lifeboard only had alias matching).
 // Rank: host-prefix, then title-word prefix, then alias, then URL-path prefix; inside a tier by
 // frecency (snapshot.sites) x a time-of-day boost. Built to stay well under 2 ms for 5,000 sites.
-import type { PredictionSnapshot, Visit } from '../history-types.ts';
+import type { UiSnapshot, Visit } from '../history-types.ts';
 import { matchAlias } from './moves.ts';
 import { resolveParams } from './params.ts';
 
@@ -20,7 +20,8 @@ export interface Completion {
   suggestions: Suggestion[];
 }
 
-type Site = PredictionSnapshot['sites'][number];
+type Snap = Pick<UiSnapshot, 'sites' | 'aliases' | 'params' | 'hourly'>;
+type Site = Snap['sites'][number];
 interface Row {
   site: Site;
   host: string; // lowercase, no www
@@ -56,7 +57,7 @@ function toRow(site: Site): Row {
   return { site, host, title, path, hk: '.' + host, tk: ' ' + title.replace(/[-_(\[|:,]+/g, ' '), pk: '/' + path };
 }
 
-function indexOf(snapshot: PredictionSnapshot): Index {
+function indexOf(snapshot: Snap): Index {
   let ix = cache.get(snapshot);
   if (ix) return ix;
   const rows = snapshot.sites.map(toRow);
@@ -88,14 +89,14 @@ function pathMatch(r: Row, t: string): boolean {
 }
 
 /** Share of this host's visits within the hour +-1, 0..1. */
-function hourShare(snapshot: PredictionSnapshot, host: string, hour: number, memo: Map<string, number>): number {
+function hourShare(snapshot: Snap, host: string, hour: number, memo: Map<string, number>): number {
   const key = host + '|' + hour;
   let v = memo.get(key);
   if (v === undefined) memo.set(key, (v = hourShareRaw(snapshot, host, hour)));
   return v;
 }
 
-function hourShareRaw(snapshot: PredictionSnapshot, host: string, hour: number): number {
+function hourShareRaw(snapshot: Snap, host: string, hour: number): number {
   const h = snapshot.hourly?.[host];
   if (!h || h.length < 24) return 0;
   let total = 0;
@@ -108,7 +109,7 @@ function hourShareRaw(snapshot: PredictionSnapshot, host: string, hour: number):
  * Suggestions for what's typed in the address box. `recentVisits` (since the last training) add a little
  * score so today's pages show up before the nightly job runs. `now` is injectable for tests.
  */
-export function complete(text: string, snapshot: PredictionSnapshot | null | undefined, recentVisits?: Visit[], now: number = Date.now()): Completion {
+export function complete(text: string, snapshot: Snap | null | undefined, recentVisits?: Visit[], now: number = Date.now()): Completion {
   const empty: Completion = { suggestions: [] };
   if (!snapshot) return empty;
   let typed = text.replace(/^\s+/, '').toLowerCase();
@@ -135,7 +136,7 @@ export function complete(text: string, snapshot: PredictionSnapshot | null | und
       extra.set(v.url, (extra.get(v.url) || 0) + add);
       if (!known.has(v.url)) {
         known.add(v.url);
-        extraRows.push(toRow({ url: v.url, host: v.host, title: v.title, score: 0, visits: 0, typed: 0, lastT: v.t }));
+        extraRows.push(toRow({ url: v.url, host: v.host, title: v.title, score: 0 }));
       }
     }
   }
@@ -210,7 +211,7 @@ export function complete(text: string, snapshot: PredictionSnapshot | null | und
       }
       continue;
     }
-    if (!row) row = toRow({ url: u, host, title: '', score: 0, visits: 0, typed: 0, lastT: 0 });
+    if (!row) row = toRow({ url: u, host, title: '', score: 0 });
     add(row, 2, 'alias');
   }
 
