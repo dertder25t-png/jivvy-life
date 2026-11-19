@@ -11,6 +11,8 @@ import { TabManager } from './tabs';
 import { Blocker } from './blocker';
 import { HistoryStore } from './history';
 import { runSelfTest } from './selftest';
+import { Logins } from './logins';
+import { readBrief, openPath } from './native';
 import { validateAction, INTERNAL_ACTIONS, isAllowedTabUrl, type Action, type PersistedState } from '../shared/state';
 import { CH, HOVER_KINDS, BLUR_KINDS, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent } from '../shared/ipc';
 import { LAYOUT, addressBarRect, chromeInsets, cubicBezier, edgeStripRect, pageRects, type Rect } from '../shared/layout';
@@ -97,6 +99,7 @@ let edgeAttached = false;
 let store: StateStore;
 let tabs: TabManager;
 let history: HistoryStore;
+let logins: Logins;
 let pageSession: Session;
 const blocker = new Blocker();
 const runtime: RuntimeState = { tabs: {}, fullscreenTabId: null, overlay: null, blocking: { ready: false, rules: 0 } };
@@ -564,8 +567,7 @@ function validSpec(s: unknown): OverlaySpec | null {
   }
 }
 
-const NOT_YET = 'Not yet available in the Electron build';
-async function command(cmd: string): Promise<unknown> {
+async function command(cmd: string, args: Record<string, unknown>): Promise<unknown> {
   switch (cmd) {
     case 'laya_classify':
     case 'laya_health':
@@ -577,13 +579,26 @@ async function command(cmd: string): Promise<unknown> {
     case 'set_blocking':
       return null; // Electron reads blocking settings from its own state
     case 'read_brief':
+      return readBrief();
     case 'open_path':
+      if (!shortStr(args.path, 4096) || !args.path) throw new Error('Bad path');
+      return openPath(args.path).then(() => null);
     case 'logins_for':
-    case 'fill_login':
+      return shortStr(args.origin, 2048) ? logins.loginsFor(args.origin) : [];
+    case 'fill_login': {
+      if (!shortStr(args.label, 140) || !shortStr(args.username, 512) || !args.username) throw new Error('Bad arguments');
+      const m = /^pane_(.+)$/.exec(args.label);
+      if (!m) throw new Error('Bad pane');
+      await logins.fillLogin(m[1], args.username);
+      return null;
+    }
     case 'import_firefox_cookies':
+      return logins.importFirefoxCookies();
     case 'import_passwords_csv':
+      if (typeof args.csv !== 'string' || args.csv.length > 20 * 1024 * 1024) throw new Error('Bad CSV');
+      return logins.importPasswordsCsv(args.csv);
     case 'forget_all_logins':
-      throw new Error(NOT_YET);
+      return logins.forgetAll();
     default:
       throw new Error(`Unknown command ${cmd.slice(0, 40)}`);
   }
@@ -644,10 +659,11 @@ function registerIpc() {
       if (e.sender === edge?.webContents && !ovAttached) openFloatingAddressBar(false);
     } else if (ev.type === 'focus-address') sendEvent({ type: 'focus-address' }, e.sender);
   });
-  ipcMain.handle(CH.invoke, async (e, cmd, _args) => {
+  ipcMain.handle(CH.invoke, async (e, cmd, rawArgs) => {
     if (!isFromUi(e) || !shortStr(cmd, 64)) return { ok: false, error: 'Rejected' };
+    if (rawArgs !== undefined && (!rawArgs || typeof rawArgs !== 'object' || Array.isArray(rawArgs))) return { ok: false, error: 'Rejected' };
     try {
-      return { ok: true, value: await command(cmd) };
+      return { ok: true, value: await command(cmd, (rawArgs ?? {}) as Record<string, unknown>) };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -788,6 +804,7 @@ if (!app.requestSingleInstanceLock()) {
     store = new StateStore(app.getPath('userData'));
     store.onChange(onStoreChange);
     history = new HistoryStore(app.getPath('userData'), () => store.state.saveHistory);
+    logins = new Logins({ userData: app.getPath('userData'), session: () => pageSession, webContentsOf: (id) => tabs.webContentsOf(id) });
     setupUiSession();
     setupPageSession();
     tabs = new TabManager(
