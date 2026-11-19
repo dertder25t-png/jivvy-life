@@ -21,6 +21,17 @@ The previous project in this repo, the Lifeboard Firefox extension, is kept at t
 - `npm run app:dev` opens a temporary hot-reload window for development. It is not an install.
 - There is no AppImage for local use: the AppImage bundles its own WebKit, which crashes on this machine, so local installs use the system WebKit. In-app updates only work in AppImage builds (the GitHub release); a source install shows an "Installed from source" note instead.
 
+## Ad & tracker blocking (app)
+
+Pane webviews (never the app UI) get WebKit content rules built from EasyList and EasyPrivacy
+(domain-only, third-party-only rules, plus a hard-coded never-block list for school, SSO, Google and
+GitHub sites). The converted rules are committed in `app/src-tauri/blocklist/blocklist.json` and
+embedded in the binary; the app never downloads lists at runtime. WebKit compiles them once on first
+start and caches the result in the app data dir. Toggle blocking, or turn it off per site, in
+Settings > Privacy or with the shield button in the address bar.
+
+Refresh the lists with `cd app && node scripts/update-blocklist.mjs`, then review the diff before committing.
+
 ## Releasing an update
 
 1. Bump `version` in `app/src-tauri/tauri.conf.json` (and `app/package.json`) and commit.

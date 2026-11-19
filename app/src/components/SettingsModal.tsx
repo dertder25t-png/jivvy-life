@@ -5,6 +5,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useWorkspaceStore } from '../store/workspaceStore';
+import { normalizeHost } from '../services/blocking';
 import { api, getApiBase, setApiBase, getSession, API_CONFIG_EVENT, Session } from '../services/apiClient';
 import { storageService, getSyncStatus, SYNC_STATUS_EVENT, SyncStatus } from '../services/storageService';
 
@@ -16,7 +17,7 @@ const Toggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean)
 );
 
 export const SettingsModal: React.FC = () => {
-  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar, showFolders, setShowFolders, zenBarPosition, setZenBarPosition } =
+  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar, showFolders, setShowFolders, zenBarPosition, setZenBarPosition, blockingEnabled, setBlockingEnabled, blockingDisabledSites, setBlockingDisabledSites } =
     useWorkspaceStore();
   const [baseUrl, setBaseUrl] = useState(getApiBase());
   const [session, setSessionState] = useState<Session | null>(getSession());
@@ -36,6 +37,19 @@ export const SettingsModal: React.FC = () => {
     };
   }, []);
   const [loginMsg, setLoginMsg] = useState('');
+  const [blockStatus, setBlockStatus] = useState<{ ready: boolean; rules: number; enabled: boolean } | null>(null);
+  const [siteInput, setSiteInput] = useState('');
+  const [siteErr, setSiteErr] = useState('');
+  const addSite = () => {
+    const h = normalizeHost(siteInput);
+    if (!h) {
+      setSiteErr('Enter a valid site like example.com');
+      return;
+    }
+    setSiteErr('');
+    setSiteInput('');
+    if (!blockingDisabledSites.includes(h)) setBlockingDisabledSites([...blockingDisabledSites, h]);
+  };
   const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [installKind, setInstallKind] = useState<'appimage' | 'native' | ''>('');
   const [appVersion, setAppVersion] = useState('');
@@ -86,6 +100,23 @@ export const SettingsModal: React.FC = () => {
         if (k === 'appimage') void checkUpdates();
       })
       .catch(() => setInstallKind('native'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsModalOpen]);
+  useEffect(() => {
+    if (!settingsModalOpen || !inTauri) return;
+    let live = true;
+    const poll = () =>
+      invoke<{ ready: boolean; rules: number; enabled: boolean }>('blocking_status')
+        .then((s) => {
+          if (!live) return;
+          setBlockStatus(s);
+          if (!s.ready) setTimeout(poll, 1500);
+        })
+        .catch(() => {});
+    void poll();
+    return () => {
+      live = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsModalOpen]);
   const loginCall = async (fn: () => Promise<string>) => {
@@ -238,6 +269,48 @@ export const SettingsModal: React.FC = () => {
               )}
             </div>
             {updMsg && <p className="text-xs text-zinc-400">{updMsg}</p>}
+          </div>
+        )}
+
+        {inTauri && (
+          <div className="space-y-2 border-t border-zinc-800 pt-3">
+            <h4 className="text-xs font-semibold text-zinc-200">Privacy</h4>
+            <Toggle label="Block ads & trackers" checked={blockingEnabled} onChange={setBlockingEnabled} />
+            <p className="text-xs text-zinc-500">
+              {!blockingEnabled ? 'Blocking is off.' : blockStatus?.ready ? `Blocking ${blockStatus.rules.toLocaleString()} trackers` : 'Getting ready…'}
+            </p>
+            <div className="text-xs text-zinc-300 space-y-1">
+              <span className="block">Sites where blocking is off</span>
+              {blockingDisabledSites.length === 0 && <p className="text-zinc-500">None.</p>}
+              {blockingDisabledSites.map((h) => (
+                <div key={h} className="flex items-center justify-between bg-zinc-900 rounded px-2 py-1">
+                  <span>{h}</span>
+                  <button onClick={() => setBlockingDisabledSites(blockingDisabledSites.filter((x) => x !== h))} title={`Turn blocking back on for ${h}`} className="text-zinc-400 hover:text-zinc-100">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  addSite();
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  value={siteInput}
+                  onChange={(e) => setSiteInput(e.target.value)}
+                  placeholder="example.com"
+                  spellCheck={false}
+                  className="flex-1 min-w-0 bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-indigo-500"
+                />
+                <button type="submit" className="px-3 py-1 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700">
+                  Add
+                </button>
+              </form>
+              {siteErr && <p className="text-red-300">{siteErr}</p>}
+            </div>
+            <p className="text-[10px] text-zinc-500">Filter lists: EasyList &amp; EasyPrivacy (easylist.to), CC BY-SA 3.0</p>
           </div>
         )}
 

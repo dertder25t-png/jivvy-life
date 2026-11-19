@@ -10,6 +10,7 @@ import {
 } from '../types/workspace';
 import { storageService } from '../services/storageService';
 import { telemetryService } from '../services/telemetryService';
+import { normalizeHost, pushBlocking, MAX_BLOCK_SITES } from '../services/blocking';
 
 const EPOCH = '1970-01-01T00:00:00.000Z';
 export type ZenBarPosition = 'left' | 'top' | 'bottom';
@@ -68,6 +69,8 @@ interface UiPrefs {
   autoHideAddressBar: boolean;
   showFolders: boolean;
   zenBarPosition: ZenBarPosition;
+  blockingEnabled: boolean;
+  blockingDisabledSites: string[];
 }
 function loadUiPrefs(): UiPrefs {
   try {
@@ -78,9 +81,13 @@ function loadUiPrefs(): UiPrefs {
       autoHideAddressBar: p.autoHideAddressBar ?? true,
       showFolders: p.showFolders ?? true,
       zenBarPosition: p.zenBarPosition === 'top' || p.zenBarPosition === 'bottom' ? p.zenBarPosition : 'left',
+      blockingEnabled: p.blockingEnabled ?? true,
+      blockingDisabledSites: Array.isArray(p.blockingDisabledSites)
+        ? [...new Set<string>(p.blockingDisabledSites.map((x: unknown) => normalizeHost(String(x))).filter((x: string | null): x is string => !!x))].slice(0, MAX_BLOCK_SITES)
+        : [],
     };
   } catch {
-    return { showTopBar: true, clearTabsOnStart: false, autoHideAddressBar: true, showFolders: true, zenBarPosition: 'left' };
+    return { showTopBar: true, clearTabsOnStart: false, autoHideAddressBar: true, showFolders: true, zenBarPosition: 'left', blockingEnabled: true, blockingDisabledSites: [] };
   }
 }
 function saveUiPrefs(p: UiPrefs) {
@@ -121,7 +128,11 @@ interface WorkspaceState {
   autoHideAddressBar: boolean;
   showFolders: boolean;
   zenBarPosition: ZenBarPosition;
+  blockingEnabled: boolean;
+  blockingDisabledSites: string[];
 
+  setBlockingEnabled: (v: boolean) => void;
+  setBlockingDisabledSites: (v: string[]) => void;
   setAutoHideAddressBar: (v: boolean) => void;
   setShowTopBar: (v: boolean) => void;
   setClearTabsOnStart: (v: boolean) => void;
@@ -179,6 +190,8 @@ function persistUi(st: WorkspaceState, patch: Partial<UiPrefs>) {
     autoHideAddressBar: patch.autoHideAddressBar ?? st.autoHideAddressBar,
     showFolders: patch.showFolders ?? st.showFolders,
     zenBarPosition: patch.zenBarPosition ?? st.zenBarPosition,
+    blockingEnabled: patch.blockingEnabled ?? st.blockingEnabled,
+    blockingDisabledSites: patch.blockingDisabledSites ?? st.blockingDisabledSites,
   });
 }
 
@@ -195,7 +208,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   autoHideAddressBar: uiPrefs.autoHideAddressBar,
   showFolders: uiPrefs.showFolders,
   zenBarPosition: uiPrefs.zenBarPosition,
+  blockingEnabled: uiPrefs.blockingEnabled,
+  blockingDisabledSites: uiPrefs.blockingDisabledSites,
 
+  setBlockingEnabled: (v) => {
+    persistUi(get(), { blockingEnabled: v });
+    set({ blockingEnabled: v });
+    pushBlocking(v, get().blockingDisabledSites);
+  },
+  setBlockingDisabledSites: (v) => {
+    const sites = [...new Set(v)].slice(0, MAX_BLOCK_SITES);
+    persistUi(get(), { blockingDisabledSites: sites });
+    set({ blockingDisabledSites: sites });
+    pushBlocking(get().blockingEnabled, sites);
+  },
   setAutoHideAddressBar: (v) => {
     persistUi(get(), { autoHideAddressBar: v });
     set({ autoHideAddressBar: v });
@@ -533,3 +559,4 @@ storageService.onPulled((p) => {
   });
 });
 storageService.init(initialWorkspaces, initialNotes);
+pushBlocking(uiPrefs.blockingEnabled, uiPrefs.blockingDisabledSites);

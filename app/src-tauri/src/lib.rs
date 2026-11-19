@@ -1,4 +1,6 @@
 mod logins;
+#[cfg(target_os = "linux")]
+mod blocking;
 use tauri::{LogicalPosition, LogicalSize, WebviewBuilder, WebviewUrl, WindowBuilder};
 
 #[cfg(target_os = "linux")]
@@ -96,6 +98,10 @@ mod linux {
                 }
             }
         }
+        // Ad/tracker blocking applies to pane webviews only, never the main UI.
+        if pane_label.is_some() {
+            crate::blocking::register_pane(wv);
+        }
         // target="_blank" links arrive as a NewWindowAction policy decision.
         let app_policy = app.clone();
         wv.connect_decide_policy(move |_webview, decision, decision_type| {
@@ -176,6 +182,37 @@ fn place_pane(
     }
     #[cfg(not(target_os = "linux"))]
     let _ = (app, label, x, y, width, height);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct BlockingStatus {
+    ready: bool,
+    rules: usize,
+    enabled: bool,
+}
+
+#[tauri::command]
+fn blocking_status() -> BlockingStatus {
+    #[cfg(target_os = "linux")]
+    {
+        let (ready, rules, enabled) = blocking::status();
+        BlockingStatus { ready, rules, enabled }
+    }
+    #[cfg(not(target_os = "linux"))]
+    BlockingStatus { ready: false, rules: 0, enabled: false }
+}
+
+#[tauri::command]
+fn set_blocking(app: tauri::AppHandle, enabled: bool, disabled_sites: Vec<String>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let sites = blocking::clean_sites(disabled_sites);
+        app.run_on_main_thread(move || blocking::set_state(enabled, sites))
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, enabled, disabled_sites);
     Ok(())
 }
 
@@ -315,6 +352,8 @@ pub fn run() {
             place_pane,
             install_kind,
             configure_pane,
+            set_blocking,
+            blocking_status,
             nav_pane,
             load_pane,
             laya_classify,
@@ -342,6 +381,11 @@ pub fn run() {
             )?;
             #[cfg(target_os = "linux")]
             {
+                if let Ok(dir) = app.path().app_data_dir() {
+                    let dir = dir.join("content-filters");
+                    // Compile/load asynchronously on the GTK thread; failure only logs.
+                    let _ = app.handle().run_on_main_thread(move || blocking::start_compile(dir));
+                }
                 let cookie_path = app.path().app_data_dir().ok().map(|d| {
                     let _ = std::fs::create_dir_all(&d);
                     d.join("webkit_cookies.sqlite")

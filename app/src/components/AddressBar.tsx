@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, RotateCw, Search, KeyRound } from 'lucide-react';
+import { ArrowLeft, ArrowRight, RotateCw, Search, KeyRound, ShieldCheck, ShieldOff } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { decide } from '../lib/router';
 import { setOverlay } from '../lib/overlay';
 import { useHoverIntent } from '../lib/useHoverIntent';
 import { NAV_EVENT } from './TopTabBar';
+import { normalizeHost, inTauri } from '../services/blocking';
 
 function hostOf(url: string) {
   try {
@@ -39,6 +40,18 @@ export const AddressBar: React.FC = React.memo(() => {
   const navigateTab = useWorkspaceStore((s) => s.navigateTab);
   const autoHide = useWorkspaceStore((s) => s.autoHideAddressBar);
   const activeHost = activeUrl ? hostOf(activeUrl) : '';
+  const blockingEnabled = useWorkspaceStore((s) => s.blockingEnabled);
+  const disabledSites = useWorkspaceStore((s) => s.blockingDisabledSites);
+  const setDisabledSites = useWorkspaceStore((s) => s.setBlockingDisabledSites);
+  // The listed site matching this host (the host itself or a parent domain), if blocking is off for it.
+  const siteHost = normalizeHost(activeHost);
+  const matchedSite = siteHost
+    ? disabledSites.find((d) => siteHost === d || siteHost.endsWith(`.${d}`))
+    : undefined;
+  const toggleSiteBlocking = () => {
+    if (!siteHost) return;
+    setDisabledSites(matchedSite ? disabledSites.filter((d) => d !== matchedSite) : [...disabledSites, siteHost]);
+  };
   const activeUrlRef = useRef(activeUrl);
   activeUrlRef.current = activeUrl;
   const [logins, setLogins] = useState<string[]>([]);
@@ -149,6 +162,16 @@ export const AddressBar: React.FC = React.memo(() => {
         />
         {decision && value.trim() && <span className="text-[10px] text-zinc-500 shrink-0">{decision.label}</span>}
       </div>
+      {inTauri() && activeType === 'web' && siteHost && blockingEnabled && (
+        <button
+          type="button"
+          onClick={toggleSiteBlocking}
+          title={matchedSite ? `Blocking is off for ${matchedSite}. Click to turn it on (reload to apply).` : `Blocking ads & trackers on ${siteHost}. Click to turn off for this site (reload to apply).`}
+          className={`p-1.5 rounded hover:bg-zinc-800 ${matchedSite ? 'text-zinc-500' : 'text-emerald-400'}`}
+        >
+          {matchedSite ? <ShieldOff className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+        </button>
+      )}
       {logins.length > 0 && (
         <div className="relative">
           <NavBtn title="Fill saved login" onClick={() => (logins.length === 1 ? fill(logins[0]) : setPickOpen((o) => !o))}>
