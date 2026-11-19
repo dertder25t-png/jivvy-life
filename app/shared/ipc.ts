@@ -4,6 +4,8 @@
 import type { Action, PersistedState } from './state';
 import type { Rect } from './layout';
 import type { PredictionSnapshot, TypedInput, Visit } from './history-types';
+import type { BenchResult } from './lifeboard/bench';
+import type { EvalLine } from './lifeboard/evallog';
 
 export interface TabRuntime {
   loading: boolean;
@@ -117,6 +119,10 @@ export interface JivvyApi {
   onPredictions(cb: (s: PredictionSnapshot | null) => void): () => void;
   /** Retrain now (worker thread). Resolves with the new snapshot, or null if training failed. */
   predictionsTrain(): Promise<PredictionSnapshot | null>;
+  /** Run the search benchmark on the live history (worker thread). Null on failure. */
+  predictionsBench(): Promise<BenchResult | null>;
+  /** Recent nightly self-evaluation lines (oldest first), for the Settings sparkline. */
+  predictionsEvalLog(): Promise<EvalLine[]>;
   /** Native commands (Tauri `invoke` equivalents). Unported ones reject with "not yet available". */
   invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T>;
 }
@@ -143,4 +149,6 @@ export const CH = {
   predictions: 'predictions:get',
   predictionsUpdated: 'predictions:updated',
   predictionsTrain: 'predictions:train',
+  predictionsBench: 'predictions:bench',
+  predictionsEvalLog: 'predictions:evalLog',
 } as const;

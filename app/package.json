@@ -15,6 +15,7 @@
     "electron:build": "npm run build && npm run electron:compile",
     "electron:start": "electron --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations .",
     "electron:dev": "node scripts/build-electron.mjs && node scripts/electron-dev.mjs",
+    "bench:search": "node scripts/bench-search.mjs",
     "electron:selftest": "JIVVY_SELFTEST=1 electron --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations . --user-data-dir=${JIVVY_TEST_PROFILE:-/tmp/jivvy-selftest-profile}"
   },
   "dependencies": {

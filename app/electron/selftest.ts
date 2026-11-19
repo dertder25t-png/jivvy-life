@@ -510,6 +510,14 @@ export async function runSelfTest(ctx: TestCtx) {
       result(!fs.readdirSync(dir).some((n) => n.startsWith('predictions.json.') && n.endsWith('.tmp')), 'trainer: atomic write leaves no temp file');
       const viaUi = await waitFor(() => ui<boolean>(`window.jivvy.predictions().then((p) => !!p && p.sites.some((x) => x.host === 'zebrafish.test'))`), 3000);
       result(viaUi, 'window.jivvy.predictions() returns the new snapshot');
+      // self-evaluation: params + eval in the snapshot, one line in predictions-eval.jsonl (0600)
+      const efile = path.join(dir, 'predictions-eval.jsonl');
+      const elines = fs.existsSync(efile) ? fs.readFileSync(efile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+      const emode = fs.existsSync(efile) ? fs.statSync(efile).mode & 0o777 : -1;
+      result(elines.length >= 1 && emode === 0o600 && elines[elines.length - 1].params && 'promoted' in elines[elines.length - 1], 'trainer: predictions-eval.jsonl written (mode 0600)', `${elines.length} line(s), mode ${emode.toString(8)}`);
+      result(!!snap?.params && snap.params.halfLifeDays > 0 && !!snap.eval && typeof snap.eval.status === 'string' && onDisk?.params?.wTyped > 0 && !!onDisk?.eval, 'snapshot carries params and eval', `eval ${snap?.eval?.status}, n=${snap?.eval?.n}`);
+      const bres = await ctx.trainer.bench();
+      result(!!bres && bres.rows.length >= 2 && bres.rows.every((r) => Number.isFinite(r.metrics.top3[1])), 'trainer: benchmark runs in the worker on live history', `${bres?.rows.map((r) => r.label).join(',')}`);
 
       // Address bar (floating copy in the overlay view): type a host prefix -> inline completion.
       await ui(`window.jivvy.overlayClose()`);

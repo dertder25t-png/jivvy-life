@@ -8,6 +8,9 @@ import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { PredictionSnapshot } from '../shared/history-types';
+import { appendLog, parseLog, regression, trend } from '../shared/lifeboard/evallog';
+import type { EvalLine } from '../shared/lifeboard/evallog';
+import type { BenchResult } from '../shared/lifeboard/bench';
 import type { HistoryStore } from './history';
 import { RETENTION_DAYS } from './history';
 
@@ -50,6 +53,7 @@ export class Trainer {
   private running: Promise<PredictionSnapshot | null> | null = null;
   private timers: NodeJS.Timeout[] = [];
   readonly file: string;
+  readonly evalFile: string;
 
   constructor(
     private dir: string,
@@ -59,6 +63,7 @@ export class Trainer {
     private workerFile: string = path.join(__dirname, 'trainer-worker.js')
   ) {
     this.file = path.join(dir, 'predictions.json');
+    this.evalFile = path.join(dir, 'predictions-eval.jsonl');
   }
 
   /** Read predictions.json (if any). Call once at startup. */
@@ -97,23 +102,37 @@ export class Trainer {
   }
 
   /** Train now. Concurrent calls share one run. Resolves with the new snapshot, or null on failure. */
-  train(): Promise<PredictionSnapshot | null> {
+  train(forceTune = false): Promise<PredictionSnapshot | null> {
     if (this.running) return this.running;
-    this.running = this.run().finally(() => {
+    this.running = this.run(forceTune).finally(() => {
       this.running = null;
     });
     return this.running;
   }
 
-  private async run(): Promise<PredictionSnapshot | null> {
+  private async run(forceTune: boolean): Promise<PredictionSnapshot | null> {
     const now = Date.now();
     const { visits, typed } = this.history.trainingData(now - RETENTION_DAYS * DAY);
     const t0 = performance.now();
     try {
-      const snap = await this.inWorker({ visits, typed, now, prev: this.snapshot });
+      // self-tune about once a night (or when asked, e.g. after an import)
+      const tune = forceTune || !this.snapshot?.eval || now - this.snapshot.eval.t > STALE_MS;
+      const res = await this.inWorker({ kind: 'train', visits, typed, now, prev: this.snapshot, tune });
+      const snap = res.snapshot;
+      if (!validSnapshot(snap)) throw new Error('bad worker result');
+      if (res.line && snap.eval) {
+        const lines = appendLog(this.readLog(), res.line as EvalLine);
+        this.writeLog(lines);
+        snap.eval.trend = trend(lines, now);
+        const r = regression(lines);
+        if (r.alert) {
+          snap.eval.alert = true;
+          snap.eval.message = r.message;
+        }
+      }
       this.write(snap);
       this.snapshot = snap;
-      log(`trained on ${visits.length} visits, ${typed.length} typed: ${snap.sites.length} sites, ${Object.keys(snap.aliases).length} shortcuts (${Math.round(performance.now() - t0)} ms)`);
+      log(`trained on ${visits.length} visits, ${typed.length} typed: ${snap.sites.length} sites, ${Object.keys(snap.aliases).length} shortcuts (${Math.round(performance.now() - t0)} ms${snap.eval && tune ? `, tuning ${snap.eval.status} in ${snap.eval.tuneMs} ms` : ''})`);
       this.onUpdate(snap);
       return snap;
     } catch (e) {
@@ -122,7 +141,37 @@ export class Trainer {
     }
   }
 
-  private inWorker(job: unknown): Promise<PredictionSnapshot> {
+  /** Run the search benchmark on the live history (worker thread). Null on failure. */
+  async bench(): Promise<BenchResult | null> {
+    const now = Date.now();
+    const { visits, typed } = this.history.trainingData(now - RETENTION_DAYS * DAY);
+    try {
+      const res = await this.inWorker({ kind: 'bench', visits, typed, now, prev: this.snapshot });
+      return (res.bench as BenchResult) ?? null;
+    } catch (e) {
+      log('benchmark failed:', String(e instanceof Error ? e.message : e).slice(0, 200));
+      return null;
+    }
+  }
+
+  /** Lines of predictions-eval.jsonl (the Settings sparkline reads this through the snapshot's neighbours). */
+  readLog(): EvalLine[] {
+    try {
+      return parseLog(fs.readFileSync(this.evalFile, 'utf8'));
+    } catch {
+      return [];
+    }
+  }
+
+  private writeLog(lines: EvalLine[]) {
+    fs.mkdirSync(this.dir, { recursive: true });
+    const tmp = `${this.evalFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, lines.map((l) => JSON.stringify(l)).join('\n') + '\n', { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, this.evalFile);
+  }
+
+  private inWorker(job: unknown): Promise<{ snapshot?: PredictionSnapshot; line?: unknown; bench?: unknown }> {
     return new Promise((resolve, reject) => {
       const w = new Worker(this.workerFile, { workerData: job });
       const timer = setTimeout(() => {
@@ -137,8 +186,8 @@ export class Trainer {
         void w.terminate();
         fn();
       };
-      w.once('message', (m: { ok: boolean; snapshot?: unknown; error?: string }) =>
-        done(() => (m.ok && validSnapshot(m.snapshot) ? resolve(m.snapshot) : reject(new Error(m.error || 'bad worker result'))))
+      w.once('message', (m: { ok: boolean; snapshot?: PredictionSnapshot; line?: unknown; bench?: unknown; error?: string }) =>
+        done(() => (m.ok ? resolve(m) : reject(new Error(m.error || 'bad worker result'))))
       );
       w.once('error', (e) => done(() => reject(e)));
       w.once('exit', (code) => done(() => reject(new Error(`worker exited (${code})`))));

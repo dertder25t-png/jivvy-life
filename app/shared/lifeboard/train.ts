@@ -4,11 +4,13 @@ import type { PredictionSnapshot, TypedInput, Visit } from '../history-types.ts'
 import { trainClassifier } from './classifier.ts';
 import type { Labeled } from './classifier.ts';
 import { isSSO } from './moves.ts';
+import { DEFAULT_PARAMS, resolveParams } from './params.ts';
+import type { PredictParams } from '../history-types.ts';
 
 type Site = PredictionSnapshot['sites'][number];
 
 export const SITE_CAP = 5000;
-export const HALF_LIFE_DAYS = 14;
+export const HALF_LIFE_DAYS = DEFAULT_PARAMS.halfLifeDays;
 const DAY = 86400000;
 
 // ---- URL normalisation ----
@@ -51,14 +53,14 @@ const hostOfUrl = (url: string): string => {
 };
 
 /** Frecency weight by how the page was reached. */
-export function transitionWeight(t: Visit['transition']): number {
+export function transitionWeight(t: Visit['transition'], p: PredictParams = DEFAULT_PARAMS): number {
   switch (t) {
-    case 'typed': return 2;
-    case 'link': return 1;
-    case 'search': return 0.3;
+    case 'typed': return p.wTyped;
+    case 'link': return p.wLink;
+    case 'search': return p.wSearch;
     case 'reload': return 0;
     case 'redirect': return 0;
-    default: return 0.5; // 'other' (bookmarks, imports with unknown transition)
+    default: return p.wOther; // 'other' (bookmarks, imports with unknown transition)
   }
 }
 
@@ -132,14 +134,14 @@ interface Ev {
 }
 
 // ---- aliases ----
-function mineAliases(events: Ev[], originByHost: Map<string, string>): Record<string, string> {
+function mineAliases(events: Ev[], originByHost: Map<string, string>, p: PredictParams): Record<string, string> {
   const pairs = new Map<string, number>(); // "q\u0000host" -> n, insertion ordered
   for (let i = 0; i < events.length; i++) {
     const q = events[i].q;
     if (!q || q.length > 40 || q.split(' ').length > 4) continue;
     for (let j = i + 1; j < events.length; j++) {
       const f = events[j];
-      if (f.t - events[i].t > 60) break;
+      if (f.t - events[i].t > p.aliasWindowSec) break;
       if (!isEngine(f.host)) {
         if (namesHost(q, f.host)) {
           const k = q + '\u0000' + f.host;
@@ -152,7 +154,7 @@ function mineAliases(events: Ev[], originByHost: Map<string, string>): Record<st
   const best = new Map<string, [string, number]>();
   for (const [k, n] of pairs) {
     const [q, host] = k.split('\u0000');
-    if (n >= 2 && n > (best.get(q)?.[1] ?? 0)) best.set(q, [host, n]);
+    if (n >= p.aliasMinCount && n > (best.get(q)?.[1] ?? 0)) best.set(q, [host, n]);
   }
   const out: Record<string, string> = {};
   for (const [q, [host]] of best) out[q] = originByHost.get(host) || 'https://' + host;
@@ -162,7 +164,7 @@ function mineAliases(events: Ev[], originByHost: Map<string, string>): Record<st
 const normText = (s: string) => s.toLowerCase().trim().replace(/\s+/g, ' ');
 
 /** typed text -> url: accepted suggestions, or the same text going to the same url 2+ times. */
-function typedAliases(typed: TypedInput[]): Record<string, string> {
+function typedAliases(typed: TypedInput[], p: PredictParams): Record<string, string> {
   const per = new Map<string, Map<string, { n: number; acc: number }>>();
   for (const ti of typed) {
     const text = normText(ti.text || '');
@@ -183,7 +185,7 @@ function typedAliases(typed: TypedInput[]): Record<string, string> {
   for (const [text, m] of per) {
     let best: [string, number] | null = null;
     for (const [url, e] of m) {
-      if (e.acc < 1 && e.n < 2) continue;
+      if (e.acc < 1 && e.n < p.aliasMinCount) continue;
       const score = e.n + e.acc;
       if (!best || score > best[1] || (score === best[1] && url < best[0])) best = [url, score];
     }
@@ -228,6 +230,8 @@ function mineSequences(events: Ev[]): { hosts: [string, string, string]; n: numb
 export interface TrainOptions {
   /** Router corrections ({text, cls}); count 3x in the classifier retrain. */
   corrections?: Labeled[];
+  /** Tunable knobs (defaults = original behaviour). Stored in snapshot.params. */
+  params?: Partial<PredictParams>;
 }
 
 /**
@@ -235,16 +239,17 @@ export interface TrainOptions {
  * `prev` is only used to keep the previous classifier when there are no corrections to retrain with.
  */
 export function train(visits: Visit[], typed: TypedInput[], now: number, prev?: PredictionSnapshot | null, opts: TrainOptions = {}): PredictionSnapshot {
+  const P = resolveParams(opts.params);
   // 1. frecency per normalized URL
   const sites = new Map<string, Site & { titleT: number }>();
   const mkSite = (url: string, host: string): Site & { titleT: number } => ({ url, host, title: '', score: 0, visits: 0, typed: 0, lastT: 0, titleT: -1 });
   for (const v of visits) {
     if (v.query) continue; // search-result pages are not destinations
-    const w = transitionWeight(v.transition);
+    const w = transitionWeight(v.transition, P);
     const url = normalizeUrl(v.url);
     let s = sites.get(url);
     if (!s) sites.set(url, (s = mkSite(url, v.host || hostOfUrl(url))));
-    if (w > 0) s.score += w * Math.pow(0.5, Math.max(0, now - v.t) / DAY / HALF_LIFE_DAYS);
+    if (w > 0) s.score += w * Math.pow(0.5, Math.max(0, now - v.t) / DAY / P.halfLifeDays);
     s.visits++;
     if (v.transition === 'typed') s.typed++;
     if (v.t > s.lastT) s.lastT = v.t;
@@ -260,7 +265,7 @@ export function train(visits: Visit[], typed: TypedInput[], now: number, prev?: 
     const url = normalizeUrl(raw);
     let s = sites.get(url);
     if (!s) sites.set(url, (s = mkSite(url, hostOfUrl(url))));
-    s.score += 1;
+    s.score += P.acceptedBonus;
     s.typed++;
     if (ti.t > s.lastT) s.lastT = ti.t;
   }
@@ -298,7 +303,7 @@ export function train(visits: Visit[], typed: TypedInput[], now: number, prev?: 
   }
 
   // 3. aliases: mined from search -> site, then typed text -> url (typed wins)
-  const aliases = { ...mineAliases(events, originByHost), ...typedAliases(typed) };
+  const aliases = { ...mineAliases(events, originByHost, P), ...typedAliases(typed, P) };
 
   // 4. sequences
   const bestUrl = new Map<string, string>();
@@ -314,7 +319,7 @@ export function train(visits: Visit[], typed: TypedInput[], now: number, prev?: 
   const hourly: Record<string, number[]> = {};
   const weekday: Record<string, number[]> = {};
   for (const v of visits) {
-    if (v.query || transitionWeight(v.transition) <= 0) continue;
+    if (v.query || transitionWeight(v.transition, P) <= 0) continue;
     const host = (v.host || hostOfUrl(v.url)).toLowerCase().replace(/^www\./, '');
     if (!keep.has(host)) continue;
     const d = new Date(v.t);
@@ -326,7 +331,7 @@ export function train(visits: Visit[], typed: TypedInput[], now: number, prev?: 
   let classifier: unknown = prev?.classifier;
   if (opts.corrections && opts.corrections.length) classifier = trainClassifier(opts.corrections);
 
-  const snap: PredictionSnapshot = { version: 1, trainedAt: now, sites: top, aliases, sequences, hourly, weekday };
+  const snap: PredictionSnapshot = { version: 1, trainedAt: now, sites: top, aliases, sequences, hourly, weekday, params: P };
   if (classifier !== undefined) snap.classifier = classifier;
   return snap;
 }

@@ -661,11 +661,13 @@ function registerIpc() {
   ipcMain.handle(CH.historyImportFirefox, async (e) => {
     if (!isFromUi(e)) return { state: 'error', imported: 0, skipped: 0, error: 'Rejected' };
     const st = await history.importFirefox();
-    if (st.state === 'done') void trainer.train();
+    if (st.state === 'done') void trainer.train(true);
     return st;
   });
   ipcMain.handle(CH.predictions, (e) => (isFromUi(e) ? trainer.snapshot : null));
-  ipcMain.handle(CH.predictionsTrain, (e) => (isFromUi(e) ? trainer.train() : null));
+  ipcMain.handle(CH.predictionsTrain, (e) => (isFromUi(e) ? trainer.train(true) : null));
+  ipcMain.handle(CH.predictionsBench, (e) => (isFromUi(e) ? trainer.bench() : null));
+  ipcMain.handle(CH.predictionsEvalLog, (e) => (isFromUi(e) ? trainer.readLog() : []));
   ipcMain.handle(CH.historyImportStatus, (e) => (isFromUi(e) ? history.importStatus() : { state: 'idle', imported: 0, skipped: 0 }));
   ipcMain.on(CH.setMuted, (e, tabId, muted) => {
     if (isFromUi(e) && shortStr(tabId, 128) && typeof muted === 'boolean') tabs.setMuted(tabId, muted);

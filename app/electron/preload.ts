@@ -30,6 +30,8 @@ const api: JivvyApi = {
   predictions: () => ipcRenderer.invoke(CH.predictions),
   onPredictions: (cb) => listen(CH.predictionsUpdated, cb),
   predictionsTrain: () => ipcRenderer.invoke(CH.predictionsTrain),
+  predictionsBench: () => ipcRenderer.invoke(CH.predictionsBench),
+  predictionsEvalLog: () => ipcRenderer.invoke(CH.predictionsEvalLog),
   invoke: async <T,>(cmd: string, args?: Record<string, unknown>) => {
     const r = (await ipcRenderer.invoke(CH.invoke, cmd, args ?? {})) as { ok: boolean; value?: T; error?: string };
     if (!r?.ok) throw new Error(r?.error || 'Command failed');

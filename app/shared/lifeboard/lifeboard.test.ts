@@ -278,3 +278,99 @@ test('budget: train() < 3 s for 50k visits (with classifier retrain)', () => {
   console.log(`train(): 50k visits -> ${snap.sites.length} sites, ${snap.sequences.length} sequences, ${Object.keys(snap.aliases).length} aliases in ${ms.toFixed(0)} ms (incl. classifier retrain)`);
   assert.ok(ms < 3000, `${ms} ms`);
 });
+
+// ---------- params, evaluate, tuning ----------
+import { DEFAULT_PARAMS, evaluate, objective, shouldPromote, synthHistory, tune, parseLog, appendLog, regression, trend, runBench, findTargets } from './index.ts';
+import type { EvalMetrics } from '../history-types.ts';
+
+const SYN = synthHistory();
+const SPLIT = SYN.now - 7 * DAY;
+
+test('params: default params reproduce the original behaviour and are stored in the snapshot', () => {
+  const a = train(SYN.visits, SYN.typed, SYN.now);
+  const b = train(SYN.visits, SYN.typed, SYN.now, null, { params: { ...DEFAULT_PARAMS } });
+  assert.deepEqual(a.params, DEFAULT_PARAMS);
+  assert.deepEqual(a.sites, b.sites);
+  const c = train(SYN.visits, SYN.typed, SYN.now, null, { params: { halfLifeDays: 3 } });
+  assert.equal(c.params!.halfLifeDays, 3);
+  assert.notDeepEqual(c.sites.map((s) => s.score), a.sites.map((s) => s.score));
+  // complete() falls back to the defaults for a snapshot without params, and honours snapshot.params
+  const { params: _p, ...old } = a;
+  assert.deepEqual(complete('git', old as PredictionSnapshot, [], SYN.now), complete('git', a, [], SYN.now));
+  assert.equal(complete('git', { ...a, params: { ...DEFAULT_PARAMS, inlineMinChars: 5 } }, [], SYN.now).inline, undefined);
+});
+
+test('evaluate: synthetic history meets sanity thresholds and is deterministic', () => {
+  const m = evaluate(SYN.visits, SYN.typed, undefined, { splitAt: SPLIT, now: SYN.now });
+  assert.equal(m.mode, 'typed');
+  assert.ok(m.n >= 30, `n=${m.n}`);
+  assert.ok(m.top3[1] >= 0.6, `top3@2 ${m.top3[1]}`);
+  assert.ok(m.top1[1] >= 0.5, `top1@2 ${m.top1[1]}`);
+  assert.ok(m.top3[2] >= m.top3[0] && m.top1[2] >= m.top1[0]);
+  assert.ok(m.keystrokesSavedPct > 40 && m.meanCharsToTop1 <= 3);
+  assert.ok(m.aliasPrecision === null || m.aliasPrecision >= 0.8);
+  assert.ok(m.p95Ms < 25);
+  const again = evaluate(SYN.visits, SYN.typed, undefined, { splitAt: SPLIT, now: SYN.now });
+  const { p95Ms: _a, trainMs: _b, ...x } = m;
+  const { p95Ms: _c, trainMs: _d, ...y } = again;
+  assert.deepEqual(x, y);
+  assert.deepEqual(synthHistory(), SYN);
+});
+
+test('evaluate: falls back to new-session link visits when there are too few typed targets', () => {
+  const linkOnly = SYN.visits.map((v) => (v.transition === 'typed' && !v.query ? { ...v, transition: 'link' as const } : v));
+  const f = findTargets(linkOnly, [], SPLIT, SYN.now);
+  assert.equal(f.mode, 'link-session');
+  assert.ok(f.targets.length > 0);
+  const m = evaluate(linkOnly, [], undefined, { splitAt: SPLIT, now: SYN.now });
+  assert.equal(m.mode, 'link-session');
+  assert.ok(m.n > 0 && m.top3[2] > 0.5);
+});
+
+test('tune: kept/promoted logic, a deliberately bad candidate is never promoted', () => {
+  const cur = evaluate(SYN.visits, SYN.typed, DEFAULT_PARAMS, { splitAt: SPLIT, now: SYN.now });
+  const mk = (o: Partial<EvalMetrics>): EvalMetrics => ({ ...cur, ...o });
+  assert.equal(shouldPromote(cur, mk({})), false);
+  assert.equal(shouldPromote(cur, mk({ top3: [cur.top3[0], cur.top3[1] + 0.005, cur.top3[2]] })), false); // below +0.01
+  assert.equal(shouldPromote(cur, mk({ top3: [cur.top3[0], cur.top3[1] + 0.05, cur.top3[2]] })), true);
+  // objective gain but top1@2 drops by more than 0.02
+  assert.equal(shouldPromote(cur, mk({ top3: [0, 1, 1], top1: [0, cur.top1[1] - 0.05, 1] })), false);
+  assert.ok(objective(mk({ wrongInlineRate: 0.5 })) < objective(cur));
+
+  // deliberately bad candidates (zero weight on every visit: nothing is ever suggested): kept
+  const bad = tune(SYN.visits, SYN.typed, SYN.now, DEFAULT_PARAMS, { candidates: [{ wTyped: 0, wLink: 0, wSearch: 0, wOther: 0, hourBoost: 0 }, { wTyped: 0, wLink: 0, wSearch: 0, wOther: 0 }] });
+  assert.equal(bad.eval.status, 'kept');
+  assert.deepEqual(bad.params, DEFAULT_PARAMS);
+  // the generated set may promote, but only with a verified gain
+  const t = tune(SYN.visits, SYN.typed, SYN.now, undefined);
+  assert.ok(t.eval.metrics);
+  if (t.eval.status === 'promoted') assert.ok(shouldPromote(t.eval.previous!, t.eval.metrics!));
+  else assert.deepEqual(t.params, DEFAULT_PARAMS);
+  // an exhausted budget keeps current params
+  let clk = 0;
+  const slow = tune(SYN.visits, SYN.typed, SYN.now, undefined, { budgetMs: 50, clock: () => (clk += 40) });
+  assert.equal(slow.eval.status, 'kept');
+  assert.deepEqual(slow.params, DEFAULT_PARAMS);
+  // too little data: insufficient, params untouched
+  const few = tune(SYN.visits.slice(0, 40), [], SYN.now, undefined);
+  assert.equal(few.eval.status, 'insufficient');
+});
+
+test('eval log: cap, regression alarm, trend', () => {
+  const line = (day: number, v: number) => ({ t: SYN.now - day * DAY, mode: 'typed', n: 50, metrics: { current: null, chosen: { top3: [0, v, 1] } as EvalMetrics }, promoted: false, params: DEFAULT_PARAMS });
+  let lines: ReturnType<typeof line>[] = [];
+  for (let i = 0; i < 130; i++) lines = appendLog(lines, line(130 - i, 0.8)) as typeof lines;
+  assert.equal(lines.length, 120);
+  assert.equal(parseLog(lines.map((l) => JSON.stringify(l)).join('\n') + '\nnot json\n').length, 120);
+  assert.equal(regression([line(3, 0.9), line(2, 0.86), line(1, 0.82), line(0, 0.78)] as never).alert, true);
+  assert.equal(regression([line(3, 0.9), line(2, 0.89), line(1, 0.88), line(0, 0.87)] as never).alert, false); // total <= 0.05
+  assert.equal(regression([line(3, 0.9), line(2, 0.86), line(1, 0.87), line(0, 0.78)] as never).alert, false); // not monotone
+  assert.equal(trend([line(7, 0.7), line(0, 0.78)] as never, SYN.now), 0.08);
+  assert.equal(trend([line(1, 0.7), line(0, 0.78)] as never, SYN.now), null);
+});
+
+test('runBench: default vs tuned table', () => {
+  const r = runBench(SYN.visits, SYN.typed, SYN.now);
+  assert.deepEqual(r.rows.map((x) => x.label), ['default', 'tuned']);
+  assert.ok(r.rows[1].metrics.top3[1] >= r.rows[0].metrics.top3[1] - 0.02);
+});

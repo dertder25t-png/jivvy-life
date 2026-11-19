@@ -3,6 +3,7 @@
 // frecency (snapshot.sites) x a time-of-day boost. Built to stay well under 2 ms for 5,000 sites.
 import type { PredictionSnapshot, Visit } from '../history-types.ts';
 import { matchAlias } from './moves.ts';
+import { resolveParams } from './params.ts';
 
 export type SuggestionReason = 'host' | 'title' | 'alias' | 'path' | 'recent';
 export interface Suggestion {
@@ -118,6 +119,7 @@ export function complete(text: string, snapshot: PredictionSnapshot | null | und
   const words = hasSpace ? t.split(/\s+/) : [t];
   const hour = new Date(now).getHours();
   const ix = indexOf(snapshot);
+  const P = resolveParams(snapshot.params);
 
   // recent visits: extra frecency, keyed by url (and new rows for urls the snapshot has not seen yet)
   let extra: Map<string, number> | null = null;
@@ -127,9 +129,9 @@ export function complete(text: string, snapshot: PredictionSnapshot | null | und
     const known = new Set<string>();
     for (const r of ix.rows) known.add(r.site.url);
     for (const v of recentVisits) {
-      const w = v.transition === 'typed' ? 2 : v.transition === 'reload' || v.transition === 'redirect' || v.query ? 0 : v.transition === 'search' ? 0.3 : 1;
+      const w = v.transition === 'typed' ? P.wTyped : v.transition === 'reload' || v.transition === 'redirect' || v.query ? 0 : v.transition === 'search' ? P.wSearch : P.wLink;
       if (!w) continue;
-      const add = w * Math.pow(0.5, Math.max(0, now - v.t) / DAY / 14);
+      const add = w * Math.pow(0.5, Math.max(0, now - v.t) / DAY / P.halfLifeDays);
       extra.set(v.url, (extra.get(v.url) || 0) + add);
       if (!known.has(v.url)) {
         known.add(v.url);
@@ -140,7 +142,7 @@ export function complete(text: string, snapshot: PredictionSnapshot | null | und
 
   const scoreOf = (r: Row): number => {
     const base = r.site.score + (extra ? extra.get(r.site.url) || 0 : 0);
-    return base * (1 + 0.3 * hourShare(snapshot, r.site.host, hour, ix.share));
+    return base * (1 + P.hourBoost * hourShare(snapshot, r.site.host, hour, ix.share));
   };
 
   interface Cand {
@@ -229,6 +231,6 @@ export function complete(text: string, snapshot: PredictionSnapshot | null | und
   if (!top) return empty;
 
   const res: Completion = { suggestions: out, url: top.row.site.url, title: top.row.site.title };
-  if (!hasSpace && top.tier === 0 && top.hostStart && top.row.host.length > t.length) res.inline = top.row.host.slice(t.length);
+  if (!hasSpace && top.tier === 0 && top.hostStart && top.row.host.length > t.length && t.length >= P.inlineMinChars) res.inline = top.row.host.slice(t.length);
   return res;
 }

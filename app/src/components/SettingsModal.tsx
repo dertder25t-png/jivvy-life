@@ -3,6 +3,10 @@ import { X, Database } from 'lucide-react';
 import { nativeInvoke as invoke, isTauri, isNative, isElectron, jivvy } from '../platform';
 import { usePredictions } from '../lib/predictions';
 import type { HistoryClearRange, ImportStatus } from '../../shared/ipc';
+import type { BenchResult } from '../../shared/lifeboard/bench';
+import { nightly } from '../../shared/lifeboard/evallog';
+import type { EvalLine } from '../../shared/lifeboard/evallog';
+import type { SnapshotEval } from '../../shared/history-types';
 import { getVersion } from '@tauri-apps/api/app';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -162,6 +166,25 @@ export const SettingsModal: React.FC = () => {
       setHistMsg((await jivvy.predictionsTrain()) ? 'Trained.' : 'Training failed. See the log.');
     } finally {
       setTraining(false);
+    }
+  };
+  const [bench, setBench] = useState<BenchResult | null>(null);
+  const [benching, setBenching] = useState(false);
+  const [evalLog, setEvalLog] = useState<EvalLine[]>([]);
+  useEffect(() => {
+    if (!jivvy || !settingsModalOpen) return;
+    void jivvy.predictionsEvalLog().then(setEvalLog, () => undefined);
+  }, [settingsModalOpen, snap?.trainedAt]);
+  const runBench = async () => {
+    if (!jivvy || benching) return;
+    setBenching(true);
+    setHistMsg('Running search benchmark…');
+    try {
+      const r = await jivvy.predictionsBench();
+      setBench(r);
+      setHistMsg(r ? '' : 'Benchmark failed. See the log.');
+    } finally {
+      setBenching(false);
     }
   };
   const clearHistory = async (range: HistoryClearRange) => {
@@ -327,10 +350,15 @@ export const SettingsModal: React.FC = () => {
               <button disabled={training} onClick={() => void retrain()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
                 Retrain now
               </button>
+              <button disabled={benching} onClick={() => void runBench()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
+                Run search benchmark
+              </button>
             </div>
             <p className="text-xs text-zinc-400" data-last-trained>
               {snap ? `Last trained: ${new Date(snap.trainedAt).toLocaleString()}, ${snap.sites.length.toLocaleString()} sites, ${Object.keys(snap.aliases).length.toLocaleString()} shortcuts` : 'Not trained yet.'}
             </p>
+            <SearchAccuracy ev={snap?.eval} log={evalLog} />
+            {bench && <BenchTable r={bench} />}
             <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
               <span>Clear history:</span>
               {([['hour', 'last hour'], ['day', 'last day'], ['all', 'all']] as const).map(([r, label]) => (
@@ -435,3 +463,72 @@ export const SettingsModal: React.FC = () => {
     </div>
   );
 };
+
+function Sparkline({ values }: { values: number[] }) {
+  if (values.length < 2) return null;
+  const w = 112, h = 24;
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = hi - lo || 1;
+  const pts = values.map((v, i) => `${((i / (values.length - 1)) * (w - 4) + 2).toFixed(1)},${(h - 3 - ((v - lo) / span) * (h - 6)).toFixed(1)}`).join(' ');
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} role="img" aria-label="Top-3 accuracy, last 14 nights" data-sparkline>
+      <polyline points={pts} fill="none" stroke="currentColor" strokeWidth="1.5" className="text-indigo-300" />
+    </svg>
+  );
+}
+
+function SearchAccuracy({ ev, log }: { ev?: SnapshotEval; log: EvalLine[] }) {
+  if (!ev) return <p className="text-xs text-zinc-500">Search accuracy: not measured yet.</p>;
+  const m = ev.metrics;
+  const nights = nightly(log).slice(-14).map((x) => x.v);
+  const arrow = ev.trend == null ? '' : ev.trend > 0.01 ? ' · trend ↑ vs 7 nights ago' : ev.trend < -0.01 ? ' · trend ↓ vs 7 nights ago' : ' · trend → vs 7 nights ago';
+  return (
+    <div className="space-y-1" data-search-accuracy>
+      {ev.status === 'insufficient' || !m ? (
+        <p className="text-xs text-zinc-400">Search accuracy: insufficient data ({ev.n} recent typed visits, need 30).</p>
+      ) : (
+        <p className="text-xs text-zinc-400">
+          Search accuracy: top-3 {Math.round(m.top3[1] * 100)}% (2 letters) · saves {Math.round(m.keystrokesSavedPct)}% keystrokes{arrow}
+        </p>
+      )}
+      <p className="text-xs text-zinc-500">
+        Last tuning: {ev.status === 'promoted' ? `promoted ${ev.changed.join(', ')}` : ev.status === 'kept' ? `kept current settings${ev.changed.length ? ` (${ev.changed[0]})` : ''}` : 'insufficient data'}
+      </p>
+      {ev.alert && <p className="text-xs text-amber-300" data-eval-alert>{ev.message || 'Search accuracy has been falling.'}</p>}
+      <Sparkline values={nights} />
+    </div>
+  );
+}
+
+function BenchTable({ r }: { r: BenchResult }) {
+  const pc = (x: number) => `${Math.round(x * 100)}%`;
+  return (
+    <div className="space-y-1" data-bench-table>
+      <table className="text-xs text-zinc-300 w-full">
+        <thead>
+          <tr className="text-left text-zinc-500">
+            {['params', 'n', 'top-1 @1/2/3', 'top-3 @1/2/3', 'chars', 'saved', 'wrong inline'].map((h) => (
+              <th key={h} className="pr-2 font-normal">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {r.rows.map(({ label, metrics: m }) => (
+            <tr key={label}>
+              <td className="pr-2">{label}</td>
+              <td className="pr-2">{m.n}</td>
+              <td className="pr-2">{m.top1.map(pc).join(' / ')}</td>
+              <td className="pr-2">{m.top3.map(pc).join(' / ')}</td>
+              <td className="pr-2">{m.meanCharsToTop1.toFixed(2)}</td>
+              <td className="pr-2">{Math.round(m.keystrokesSavedPct)}%</td>
+              <td className="pr-2">{pc(m.wrongInlineRate)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-xs text-zinc-500">
+        Tuning would {r.tuning.status === 'promoted' ? `promote ${r.tuning.changed.join(', ')}` : r.tuning.status === 'insufficient' ? 'be skipped (insufficient data)' : 'keep current settings'} ({r.tuning.tuneMs} ms).
+      </p>
+    </div>
+  );
+}
