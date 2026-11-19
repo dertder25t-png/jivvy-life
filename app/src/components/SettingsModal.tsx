@@ -16,7 +16,7 @@ const Toggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean)
 );
 
 export const SettingsModal: React.FC = () => {
-  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar } =
+  const { settingsModalOpen, setSettingsModalOpen, showTopBar, setShowTopBar, clearTabsOnStart, setClearTabsOnStart, autoHideAddressBar, setAutoHideAddressBar, showFolders, setShowFolders, zenBarPosition, setZenBarPosition } =
     useWorkspaceStore();
   const [baseUrl, setBaseUrl] = useState(getApiBase());
   const [session, setSessionState] = useState<Session | null>(getSession());
@@ -37,6 +37,7 @@ export const SettingsModal: React.FC = () => {
   }, []);
   const [loginMsg, setLoginMsg] = useState('');
   const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const [installKind, setInstallKind] = useState<'appimage' | 'native' | ''>('');
   const [appVersion, setAppVersion] = useState('');
   const [update, setUpdate] = useState<Update | null>(null);
   const [updMsg, setUpdMsg] = useState('');
@@ -79,7 +80,12 @@ export const SettingsModal: React.FC = () => {
   useEffect(() => {
     if (!settingsModalOpen || !inTauri) return;
     getVersion().then(setAppVersion).catch(() => {});
-    void checkUpdates();
+    invoke<string>('install_kind')
+      .then((k) => {
+        setInstallKind(k === 'appimage' ? 'appimage' : 'native');
+        if (k === 'appimage') void checkUpdates();
+      })
+      .catch(() => setInstallKind('native'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsModalOpen]);
   const loginCall = async (fn: () => Promise<string>) => {
@@ -126,8 +132,21 @@ export const SettingsModal: React.FC = () => {
 
         <div className="space-y-2 pb-3 border-b border-zinc-800">
           <Toggle label="Show top bar" checked={showTopBar} onChange={setShowTopBar} />
+          <Toggle label="Show folders in sidebar" checked={showFolders} onChange={setShowFolders} />
           <Toggle label="Auto-hide address bar (hover the top edge to show it)" checked={autoHideAddressBar} onChange={setAutoHideAddressBar} />
           <Toggle label="Clear tabs when the app starts" checked={clearTabsOnStart} onChange={setClearTabsOnStart} />
+          <div className="flex items-center justify-between text-xs text-zinc-300 pt-1">
+            <span>Zen mode hover bar edge</span>
+            <select
+              value={zenBarPosition}
+              onChange={(e) => setZenBarPosition(e.target.value as 'left' | 'top' | 'bottom')}
+              className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-100"
+            >
+              <option value="left">Left (Compact without icons)</option>
+              <option value="top">Top edge</option>
+              <option value="bottom">Bottom edge</option>
+            </select>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -190,7 +209,15 @@ export const SettingsModal: React.FC = () => {
           )}
         </div>
 
-        {inTauri && (
+        {inTauri && installKind === 'native' && (
+          <div className="border-t border-zinc-800 pt-3">
+            <p className="text-xs text-zinc-400">
+              Installed from source. Update with <code className="text-zinc-300">npm run app:install</code>.
+            </p>
+          </div>
+        )}
+
+        {inTauri && installKind === 'appimage' && (
           <div className="space-y-2 border-t border-zinc-800 pt-3">
             <h4 className="text-xs font-semibold text-zinc-200">Updates</h4>
             <p className="text-xs text-zinc-400">Current version {appVersion || '...'}</p>

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Search, CornerDownLeft } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
+import { setOverlay } from '../lib/overlay';
 import { decide, unitCalc, RouteDecision } from '../lib/router';
 
 export const OPEN_OMNIBOX_EVENT = 'lifeapp:omnibox-open';
@@ -28,7 +29,7 @@ interface OmniFormProps {
 }
 
 // Shared input + route label + unit hint. Each mount keeps its own query string.
-export const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inputRef, onDone }) => {
+const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocus, inputRef, onDone }) => {
   const openTab = useWorkspaceStore((s) => s.openTab);
   const [value, setValue] = useState('');
   const decision = useMemo(() => decide(value), [value]);
@@ -87,6 +88,7 @@ export const OmniForm: React.FC<OmniFormProps> = React.memo(({ variant, autoFocu
 OmniForm.displayName = 'OmniForm';
 
 export const ZenOmnibox: React.FC = () => {
+  const layoutMode = useWorkspaceStore((s) => s.layoutMode);
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -113,7 +115,8 @@ export const ZenOmnibox: React.FC = () => {
 
   // Native child webviews paint above the DOM: tell PaneContainer to hide them while the palette is open.
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent('lifeapp:overlay', { detail: { source: 'omnibox', open } }));
+    setOverlay('omnibox', open);
+    return () => setOverlay('omnibox', false);
   }, [open]);
 
   // Keep focus in the palette input whenever it opens.
@@ -145,6 +148,15 @@ export const ZenOmnibox: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Zen floating pill. */}
+      {layoutMode === 'zen' && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[min(560px,calc(100vw-2rem))]">
+          <div className="rounded-2xl border border-zinc-700 bg-zinc-900/90 backdrop-blur px-4 py-2.5 shadow-xl shadow-black/40 hover:border-zinc-600 transition-colors">
+            <OmniForm variant="pill" onDone={() => undefined} />
+          </div>
+        </div>
+      )}
     </>
   );
 };

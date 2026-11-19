@@ -27,6 +27,18 @@
   overflow: hidden;
 }
 
+/* Zen rail: 0px clipped until hovered via the 6px trigger strip */
+.rail-zen {
+  clip-path: inset(0 100% 0 0);
+  transition: clip-path 160ms ease-out, box-shadow 160ms ease-out;
+}
+.rail-zen-wrap:hover .rail-zen,
+.rail-zen:hover,
+.rail-zen:focus-within {
+  clip-path: inset(0 0 0 0);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.55);
+}
+
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }

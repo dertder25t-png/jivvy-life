@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Jivvy Life",
-  "version": "0.2.1",
-  "identifier": "com.lifeapp.shell",
+  "version": "0.3.0",
+  "identifier": "com.jivvy.life",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

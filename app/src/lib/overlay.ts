@@ -7,3 +7,5 @@ export function setOverlay(source: string, isOpen: boolean) {
   window.dispatchEvent(new CustomEvent('lifeapp:overlay', { detail: { source, open: open.size > 0 } }));
   void had;
 }
+
+export const isOverlayOpen = () => open.size > 0;

@@ -2060,6 +2060,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "jivvy-life"
+version = "0.3.0"
+dependencies = [
+ "csv",
+ "gtk",
+ "keyring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "soup3",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "url",
+ "webkit2gtk",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2255,25 +2274,6 @@ dependencies = [
  "cc",
  "pkg-config",
  "vcpkg",
-]
-
-[[package]]
-name = "life-app"
-version = "0.1.0"
-dependencies = [
- "csv",
- "gtk",
- "keyring",
- "rusqlite",
- "serde",
- "serde_json",
- "soup3",
- "tauri",
- "tauri-build",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "url",
- "webkit2gtk",
 ]
 
 [[package]]

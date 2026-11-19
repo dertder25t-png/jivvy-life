@@ -12,6 +12,7 @@ import { storageService } from '../services/storageService';
 import { telemetryService } from '../services/telemetryService';
 
 const EPOCH = '1970-01-01T00:00:00.000Z';
+export type ZenBarPosition = 'left' | 'top' | 'bottom';
 
 const DEFAULT_WORKSPACES: WorkspaceManifest[] = [
   {
@@ -21,7 +22,7 @@ const DEFAULT_WORKSPACES: WorkspaceManifest[] = [
     layout: 'single',
     primaryTabId: 'tab_dashboard',
     secondaryTabId: null,
-    updatedAt: EPOCH, // epoch so a fresh device never overwrites remote data with defaults
+    updatedAt: EPOCH,
     tabs: [
       {
         id: 'tab_dashboard',
@@ -53,7 +54,7 @@ const DEFAULT_NOTES: NoteDocument[] = [
   {
     id: 'note_welcome',
     title: 'Welcome Note',
-    content: '# Life App Alpha v1\n\nYour unified workspace shell is live.\n\nTry linking to [[Study Plan]] or importing your Firefox bookmarks.',
+    content: '# Jivvy Life\n\nYour unified workspace shell is live.\n\nTry linking to [[Study Plan]] or importing your Firefox bookmarks.',
     tags: ['alpha', 'dashboard'],
     wikilinks: ['Study Plan'],
     updatedAt: EPOCH,
@@ -65,6 +66,8 @@ interface UiPrefs {
   showTopBar: boolean;
   clearTabsOnStart: boolean;
   autoHideAddressBar: boolean;
+  showFolders: boolean;
+  zenBarPosition: ZenBarPosition;
 }
 function loadUiPrefs(): UiPrefs {
   try {
@@ -73,9 +76,11 @@ function loadUiPrefs(): UiPrefs {
       showTopBar: p.showTopBar ?? true,
       clearTabsOnStart: p.clearTabsOnStart ?? false,
       autoHideAddressBar: p.autoHideAddressBar ?? true,
+      showFolders: p.showFolders ?? true,
+      zenBarPosition: p.zenBarPosition === 'top' || p.zenBarPosition === 'bottom' ? p.zenBarPosition : 'left',
     };
   } catch {
-    return { showTopBar: true, clearTabsOnStart: false, autoHideAddressBar: true };
+    return { showTopBar: true, clearTabsOnStart: false, autoHideAddressBar: true, showFolders: true, zenBarPosition: 'left' };
   }
 }
 function saveUiPrefs(p: UiPrefs) {
@@ -86,7 +91,6 @@ function saveUiPrefs(p: UiPrefs) {
   }
 }
 
-// Keeps pinned tabs and the Dashboard tab; fixes pane pointers and drops dangling folder refs.
 const isKept = (t: WorkspaceTab) => !!t.pinned || t.type === 'dashboard';
 function clearedWorkspace(ws: WorkspaceManifest): WorkspaceManifest {
   const tabs = ws.tabs.filter(isKept);
@@ -115,12 +119,17 @@ interface WorkspaceState {
   showTopBar: boolean;
   clearTabsOnStart: boolean;
   autoHideAddressBar: boolean;
-  setAutoHideAddressBar: (v: boolean) => void;
+  showFolders: boolean;
+  zenBarPosition: ZenBarPosition;
 
+  setAutoHideAddressBar: (v: boolean) => void;
   setShowTopBar: (v: boolean) => void;
   setClearTabsOnStart: (v: boolean) => void;
+  setShowFolders: (v: boolean) => void;
+  setZenBarPosition: (v: ZenBarPosition) => void;
   clearAllTabs: () => void;
   navigateTab: (tabId: string, url: string, title?: string) => void;
+  syncTabFromPage: (tabId: string, url: string, title?: string) => void;
   createFolder: (name: string) => string;
   renameFolder: (folderId: string, name: string) => void;
   deleteFolder: (folderId: string) => void;
@@ -142,7 +151,6 @@ interface WorkspaceState {
 }
 
 const uiPrefs = loadUiPrefs();
-// Saved state from before the Dashboard tab existed: give each workspace a pinned Dashboard first.
 const withDashboard = (ws: WorkspaceManifest): WorkspaceManifest =>
   ws.tabs.some((t) => t.type === 'dashboard')
     ? ws
@@ -164,6 +172,16 @@ let initialWorkspaces = (storageService.loadWorkspaces() || DEFAULT_WORKSPACES).
 if (uiPrefs.clearTabsOnStart) initialWorkspaces = initialWorkspaces.map(clearedWorkspace);
 const initialNotes = storageService.loadNotes() || DEFAULT_NOTES;
 
+function persistUi(st: WorkspaceState, patch: Partial<UiPrefs>) {
+  saveUiPrefs({
+    showTopBar: patch.showTopBar ?? st.showTopBar,
+    clearTabsOnStart: patch.clearTabsOnStart ?? st.clearTabsOnStart,
+    autoHideAddressBar: patch.autoHideAddressBar ?? st.autoHideAddressBar,
+    showFolders: patch.showFolders ?? st.showFolders,
+    zenBarPosition: patch.zenBarPosition ?? st.zenBarPosition,
+  });
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaces: initialWorkspaces,
   activeWorkspaceId: initialWorkspaces[0]?.id || 'ws_dashboard',
@@ -175,19 +193,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   showTopBar: uiPrefs.showTopBar,
   clearTabsOnStart: uiPrefs.clearTabsOnStart,
   autoHideAddressBar: uiPrefs.autoHideAddressBar,
+  showFolders: uiPrefs.showFolders,
+  zenBarPosition: uiPrefs.zenBarPosition,
+
   setAutoHideAddressBar: (v) => {
-    const { showTopBar, clearTabsOnStart } = get();
-    saveUiPrefs({ showTopBar, clearTabsOnStart, autoHideAddressBar: v });
+    persistUi(get(), { autoHideAddressBar: v });
     set({ autoHideAddressBar: v });
   },
-
   setShowTopBar: (v) => {
-    saveUiPrefs({ showTopBar: v, clearTabsOnStart: get().clearTabsOnStart, autoHideAddressBar: get().autoHideAddressBar });
+    persistUi(get(), { showTopBar: v });
     set({ showTopBar: v });
   },
   setClearTabsOnStart: (v) => {
-    saveUiPrefs({ showTopBar: get().showTopBar, clearTabsOnStart: v, autoHideAddressBar: get().autoHideAddressBar });
+    persistUi(get(), { clearTabsOnStart: v });
     set({ clearTabsOnStart: v });
+  },
+  setShowFolders: (v) => {
+    persistUi(get(), { showFolders: v });
+    set({ showFolders: v });
+  },
+  setZenBarPosition: (v) => {
+    persistUi(get(), { zenBarPosition: v });
+    set({ zenBarPosition: v });
   },
 
   clearAllTabs: () => {
@@ -209,6 +236,29 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             updatedAt: now,
           }
     );
+    storageService.saveWorkspaces(updated);
+    set({ workspaces: updated });
+  },
+
+  // Page-driven updates (in-page navigation, title changes). Saved locally, but no
+  // updatedAt bump: every redirect would otherwise trigger a sync push.
+  syncTabFromPage: (tabId, url, title) => {
+    const { workspaces } = get();
+    let changed = false;
+    const updated = workspaces.map((ws) => {
+      if (!ws.tabs.some((t) => t.id === tabId)) return ws;
+      return {
+        ...ws,
+        tabs: ws.tabs.map((t) => {
+          if (t.id !== tabId || t.type !== 'web') return t;
+          const nextTitle = title && title.trim() ? title.trim() : t.title;
+          if (t.url === url && t.title === nextTitle) return t;
+          changed = true;
+          return { ...t, url, title: nextTitle };
+        }),
+      };
+    });
+    if (!changed) return;
     storageService.saveWorkspaces(updated);
     set({ workspaces: updated });
   },
@@ -326,6 +376,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         tabs: [...ws.tabs, newTab],
         primaryTabId: targetPane === 'primary' ? newTab.id : ws.primaryTabId,
         secondaryTabId: targetPane === 'secondary' ? newTab.id : ws.secondaryTabId,
+        layout: targetPane === 'secondary' ? 'split-vertical' : ws.layout,
         updatedAt: new Date().toISOString(),
       };
     });
@@ -335,19 +386,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       eventType: 'tab_focused',
       workspaceId: activeWorkspaceId,
       tabId: newTab.id,
-      domain: newTab.url ? new URL(newTab.url).hostname : newTab.type,
+      domain: newTab.url ? (() => { try { return new URL(newTab.url).hostname; } catch { return 'web'; } })() : newTab.type,
     });
   },
 
+  // Focus does NOT bump updatedAt so clicking tabs doesn't spam cloud sync pushes.
   focusTab: (tabId, pane = 'primary') => {
     const { workspaces, activeWorkspaceId } = get();
-    const updated = workspaces.map((ws) => {
-      if (ws.id !== activeWorkspaceId) return ws;
+    const ws = workspaces.find((w) => w.id === activeWorkspaceId);
+    if (!ws) return;
+    if (pane === 'primary' && ws.primaryTabId === tabId) return;
+    if (pane === 'secondary' && ws.secondaryTabId === tabId && ws.layout === 'split-vertical') return;
+
+    const updated = workspaces.map((w) => {
+      if (w.id !== activeWorkspaceId) return w;
       return {
-        ...ws,
-        primaryTabId: pane === 'primary' ? tabId : ws.primaryTabId,
-        secondaryTabId: pane === 'secondary' ? tabId : ws.secondaryTabId,
-        updatedAt: new Date().toISOString(),
+        ...w,
+        primaryTabId: pane === 'primary' ? tabId : w.primaryTabId,
+        secondaryTabId: pane === 'secondary' ? tabId : w.secondaryTabId,
+        layout: pane === 'secondary' ? 'split-vertical' : w.layout,
       };
     });
     storageService.saveWorkspaces(updated);
@@ -462,7 +519,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setSettingsModalOpen: (open) => set({ settingsModalOpen: open }),
 }));
 
-// Cloud sync: no-op unless signed in to the Jivvy API. Remote rows merged last-write-wins on updatedAt.
 storageService.onPulled((p) => {
   useWorkspaceStore.setState((st) => {
     const workspaces = p.workspaces ?? st.workspaces;

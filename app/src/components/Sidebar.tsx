@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Pin, Globe, FileText, Plus, X, BookOpen, LayoutDashboard, Folder, FolderOpen, FolderPlus, ChevronRight, ChevronDown, Pencil, Trash2, FolderInput } from 'lucide-react';
+import { Pin, Globe, FileText, Plus, X, BookOpen, LayoutDashboard, Folder, FolderOpen, FolderPlus, ChevronRight, ChevronDown, Pencil, Trash2, FolderInput, Columns2, EyeOff, Eye } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { WorkspaceTab, TabFolder } from '../types/workspace';
 import { HamburgerMenu } from './HamburgerMenu';
@@ -84,6 +84,7 @@ TabRow.displayName = 'TabRow';
 interface FolderHeaderProps {
   folder: TabFolder;
   count: number;
+  compact: boolean;
   lbl: string;
   editing: boolean;
   onToggle: (id: string) => void;
@@ -93,7 +94,7 @@ interface FolderHeaderProps {
   onDropTab: (tabId: string, folderId: string) => void;
 }
 
-const FolderHeader = React.memo(({ folder, count, lbl, editing, onToggle, onStartRename, onRename, onDelete, onDropTab }: FolderHeaderProps) => {
+const FolderHeader = React.memo(({ folder, count, compact, lbl, editing, onToggle, onStartRename, onRename, onDelete, onDropTab }: FolderHeaderProps) => {
   const [over, setOver] = useState(false);
   const [name, setName] = useState(folder.name);
   useEffect(() => setName(folder.name), [folder.name, editing]);
@@ -118,12 +119,23 @@ const FolderHeader = React.memo(({ folder, count, lbl, editing, onToggle, onStar
       }}
       onClick={() => !editing && onToggle(folder.id)}
       onDoubleClick={() => onStartRename(folder.id)}
-      className={`group flex items-center gap-1.5 px-2 py-1.5 rounded text-xs cursor-pointer text-zinc-300 hover:bg-zinc-800/60 ${
+      title={folder.name}
+      className={`rail-item group flex items-center gap-1.5 px-2 py-1.5 rounded text-xs cursor-pointer text-zinc-300 hover:bg-zinc-800/60 ${
         over ? 'bg-indigo-600/20 ring-1 ring-indigo-500/50' : ''
       }`}
     >
-      {folder.collapsed ? <ChevronRight className="w-3 h-3 shrink-0 text-zinc-500" /> : <ChevronDown className="w-3 h-3 shrink-0 text-zinc-500" />}
-      {folder.collapsed ? <Folder className="w-3.5 h-3.5 shrink-0 text-zinc-400" /> : <FolderOpen className="w-3.5 h-3.5 shrink-0 text-zinc-400" />}
+      {folder.collapsed ? (
+        <Folder className="w-3.5 h-3.5 shrink-0 text-zinc-400" />
+      ) : (
+        <FolderOpen className="w-3.5 h-3.5 shrink-0 text-zinc-400" />
+      )}
+      <span className={compact ? 'hidden group-hover/rail:inline-flex shrink-0' : 'inline-flex shrink-0'}>
+        {folder.collapsed ? (
+          <ChevronRight className="w-3 h-3 text-zinc-500" />
+        ) : (
+          <ChevronDown className="w-3 h-3 text-zinc-500" />
+        )}
+      </span>
       {editing ? (
         <input
           autoFocus
@@ -143,7 +155,7 @@ const FolderHeader = React.memo(({ folder, count, lbl, editing, onToggle, onStar
         </span>
       )}
       {!editing && (
-        <span className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 ${lbl ? 'hidden' : ''}`}>
+        <span className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 ${compact ? 'hidden group-hover/rail:flex' : ''}`}>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -178,11 +190,12 @@ interface CtxMenu {
 }
 
 export const Sidebar: React.FC = () => {
-  // Granular selectors: a store change only re-renders the slices this component reads.
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const layoutMode = useWorkspaceStore((s) => s.layoutMode);
+  const showFolders = useWorkspaceStore((s) => s.showFolders);
+  const setShowFolders = useWorkspaceStore((s) => s.setShowFolders);
   const focusTab = useWorkspaceStore((s) => s.focusTab);
   const closeTab = useWorkspaceStore((s) => s.closeTab);
   const togglePin = useWorkspaceStore((s) => s.togglePin);
@@ -199,49 +212,71 @@ export const Sidebar: React.FC = () => {
   const [rootOver, setRootOver] = useState(false);
 
   const activeWs = workspaces.find((w) => w.id === activeWorkspaceId) || workspaces[0];
-  // In compact-rail mode labels are always mounted but faded out, so expanding is a pure
-  // clip-path/opacity change with no DOM or layout work.
-  const compact = layoutMode === 'compact-rail';
+  const isZenLeft = layoutMode === 'zen';
+  const compact = layoutMode === 'compact-rail' || isZenLeft;
   const lbl = compact ? 'transition-opacity duration-150 opacity-0 group-hover/rail:opacity-100' : '';
 
-  const emitRail = (expanded: boolean) =>
-    window.dispatchEvent(new CustomEvent('lifeapp:rail', { detail: { expanded, width: 256 } }));
+  const emitRail = useCallback(
+    (expanded: boolean) =>
+      window.dispatchEvent(new CustomEvent('lifeapp:rail', { detail: { expanded, width: 256 } })),
+    []
+  );
+  const railTimer = useRef<number | null>(null);
+  const railIntent = useCallback(
+    (expanded: boolean) => {
+      if (railTimer.current !== null) window.clearTimeout(railTimer.current);
+      railTimer.current = window.setTimeout(() => emitRail(expanded), expanded ? 180 : 250);
+    },
+    [emitRail]
+  );
+  useEffect(() => () => { if (railTimer.current !== null) window.clearTimeout(railTimer.current); }, []);
+
+  // Always reset rail state when mode changes OR when Sidebar unmounts (prevents Compact -> Zen 256px stuck bug)
   useEffect(() => {
+    if (railTimer.current !== null) window.clearTimeout(railTimer.current);
     if (!compact) emitRail(false);
-  }, [compact]);
+    return () => { emitRail(false); };
+  }, [compact, emitRail]);
 
   useEffect(() => {
     setOverlay('tabmenu', !!ctx);
-    return () => setOverlay('tabmenu', false);
+    return () => { setOverlay('tabmenu', false); };
   }, [ctx]);
 
-  const folders = useMemo(() => activeWs?.folders ?? [], [activeWs]);
+  const folders = useMemo(() => (showFolders ? activeWs?.folders ?? [] : []), [activeWs, showFolders]);
   const { rootTabs, byFolder } = useMemo(() => {
     const ids = new Set(folders.map((f) => f.id));
     const map = new Map<string, WorkspaceTab[]>();
     const root: WorkspaceTab[] = [];
-    for (const t of activeWs?.tabs ?? []) {
-      if (t.folderId && ids.has(t.folderId)) {
+    const sortedTabs = [
+      ...(activeWs?.tabs.filter((t) => t.pinned) ?? []),
+      ...(activeWs?.tabs.filter((t) => !t.pinned) ?? []),
+    ];
+    for (const t of sortedTabs) {
+      if (showFolders && t.folderId && ids.has(t.folderId)) {
         const arr = map.get(t.folderId) ?? [];
         arr.push(t);
         map.set(t.folderId, arr);
       } else root.push(t);
     }
     return { rootTabs: root, byFolder: map };
-  }, [activeWs, folders]);
+  }, [activeWs, folders, showFolders]);
 
   const onFocus = useCallback((id: string) => focusTab(id), [focusTab]);
   const onClose = useCallback((id: string) => closeTab(id), [closeTab]);
   const onMenu = useCallback((tabId: string, x: number, y: number) => setCtx({ tabId, x, y }), []);
   const onDropTab = useCallback((tabId: string, folderId: string) => moveTabToFolder(tabId, folderId), [moveTabToFolder]);
 
-  const newFolder = () => setEditingFolder(createFolder('New folder'));
+  const newFolder = () => {
+    if (!showFolders) setShowFolders(true);
+    setEditingFolder(createFolder('New folder'));
+  };
 
   const renderRow = (tab: WorkspaceTab, indent: boolean) => (
     <TabRow
       key={tab.id}
       tab={tab}
-      indent={indent}
+      indent={indent && (!compact)}
       active={tab.id === activeWs?.primaryTabId || tab.id === activeWs?.secondaryTabId}
       compact={compact}
       lbl={lbl}
@@ -255,37 +290,44 @@ export const Sidebar: React.FC = () => {
   const ctxTab = ctx ? activeWs?.tabs.find((t) => t.id === ctx.tabId) : undefined;
   const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-zinc-300 hover:bg-zinc-800';
 
+  const wrapperClass = isZenLeft
+    ? 'rail-zen-wrap relative w-1.5 shrink-0 h-full bg-zinc-950 hover:bg-indigo-500/30 transition-colors'
+    : compact
+    ? 'relative w-12 shrink-0 h-full'
+    : 'relative w-64 shrink-0 h-full';
+
+  const asideClass = isZenLeft
+    ? 'rail-zen absolute inset-y-0 left-0 z-30'
+    : compact
+    ? 'rail-collapsed absolute inset-y-0 left-0 z-30'
+    : '';
+
   return (
-    // Wrapper reserves 48px in compact mode; the 256px panel floats over the workspace on hover.
-    <div className={compact ? 'relative w-12 shrink-0 h-full' : 'relative w-64 shrink-0 h-full'}>
-      <aside
-        onMouseEnter={compact ? () => emitRail(true) : undefined}
-        onMouseLeave={compact ? () => emitRail(false) : undefined}
-        className={`group/rail h-full w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col select-none ${
-          compact ? 'rail-collapsed absolute inset-y-0 left-0 z-30' : ''
-        }`}
-      >
-        {/* Workspaces: only worth showing once there's more than one (imports add them). */}
+    <div
+      className={wrapperClass}
+      onMouseEnter={compact ? () => railIntent(true) : undefined}
+      onMouseLeave={compact ? () => railIntent(false) : undefined}
+    >
+      <aside className={`group/rail h-full w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col select-none ${asideClass}`}>
         {workspaces.length > 1 && (
-        <div className="p-2 border-b border-zinc-800 space-y-1">
-          <div className={`text-[10px] uppercase tracking-wider text-zinc-500 px-2 ${lbl}`}>Workspaces</div>
-          {workspaces.map((ws) => (
-            <button
-              key={ws.id}
-              onClick={() => setActiveWorkspace(ws.id)}
-              title={ws.name}
-              className={`rail-item w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs ${
-                ws.id === activeWorkspaceId ? 'bg-indigo-600/20 text-indigo-300 font-medium' : 'text-zinc-400 hover:bg-zinc-800'
-              }`}
-            >
-              <span className="w-5 shrink-0 text-center font-semibold">{ws.name.slice(0, 2).toUpperCase()}</span>
-              <span className={`truncate ${lbl}`}>{ws.name}</span>
-            </button>
-          ))}
-        </div>
+          <div className="p-2 border-b border-zinc-800 space-y-1">
+            <div className={`text-[10px] uppercase tracking-wider text-zinc-500 px-2 ${lbl}`}>Workspaces</div>
+            {workspaces.map((ws) => (
+              <button
+                key={ws.id}
+                onClick={() => setActiveWorkspace(ws.id)}
+                title={ws.name}
+                className={`rail-item w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs ${
+                  ws.id === activeWorkspaceId ? 'bg-indigo-600/20 text-indigo-300 font-medium' : 'text-zinc-400 hover:bg-zinc-800'
+                }`}
+              >
+                <span className="w-5 shrink-0 text-center font-semibold">{ws.name.slice(0, 2).toUpperCase()}</span>
+                <span className={`truncate ${lbl}`}>{ws.name}</span>
+              </button>
+            ))}
+          </div>
         )}
 
-        {/* Vertical tabs + folders */}
         <div
           className={`flex-1 overflow-y-auto p-2 space-y-0.5 ${rootOver ? 'bg-zinc-800/30' : ''}`}
           onDragOver={(e) => {
@@ -307,6 +349,13 @@ export const Sidebar: React.FC = () => {
           <div className={`flex items-center justify-between px-2 mb-1 ${lbl}`}>
             <span className="text-[10px] uppercase tracking-wider text-zinc-500">Tabs</span>
             <span className="flex items-center gap-2">
+              <button
+                onClick={() => setShowFolders(!showFolders)}
+                title={showFolders ? 'Hide folders' : 'Show folders'}
+                className="text-zinc-400 hover:text-white"
+              >
+                {showFolders ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+              </button>
               <button onClick={newFolder} title="New folder" className="text-zinc-400 hover:text-white">
                 <FolderPlus className="w-3.5 h-3.5" />
               </button>
@@ -320,25 +369,26 @@ export const Sidebar: React.FC = () => {
             </span>
           </div>
           {rootTabs.map((t) => renderRow(t, false))}
-          {folders.map((f) => (
-            <div key={f.id}>
-              <FolderHeader
-                folder={f}
-                count={byFolder.get(f.id)?.length ?? 0}
-                lbl={lbl}
-                editing={editingFolder === f.id}
-                onToggle={toggleFolder}
-                onStartRename={setEditingFolder}
-                onRename={renameFolder}
-                onDelete={setFolderToDelete}
-                onDropTab={onDropTab}
-              />
-              {!f.collapsed && byFolder.get(f.id)?.map((t) => renderRow(t, true))}
-            </div>
-          ))}
+          {showFolders &&
+            folders.map((f) => (
+              <div key={f.id}>
+                <FolderHeader
+                  folder={f}
+                  count={byFolder.get(f.id)?.length ?? 0}
+                  compact={compact}
+                  lbl={lbl}
+                  editing={editingFolder === f.id}
+                  onToggle={toggleFolder}
+                  onStartRename={setEditingFolder}
+                  onRename={renameFolder}
+                  onDelete={setFolderToDelete}
+                  onDropTab={onDropTab}
+                />
+                {!f.collapsed && byFolder.get(f.id)?.map((t) => renderRow(t, true))}
+              </div>
+            ))}
         </div>
 
-        {/* Footer: single app menu */}
         <div className="p-2 border-t border-zinc-800 flex items-center">
           <HamburgerMenu placement="up" />
         </div>
@@ -350,7 +400,7 @@ export const Sidebar: React.FC = () => {
           <>
             <div className="fixed inset-0 z-[60]" onMouseDown={() => setCtx(null)} onContextMenu={(e) => (e.preventDefault(), setCtx(null))} />
             <div
-              style={{ left: Math.min(ctx.x, window.innerWidth - 200), top: Math.min(ctx.y, window.innerHeight - 260) }}
+              style={{ left: Math.min(ctx.x, window.innerWidth - 200), top: Math.min(ctx.y, window.innerHeight - 280) }}
               className="fixed z-[61] w-48 py-1 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl shadow-black/50"
             >
               <button
@@ -361,6 +411,15 @@ export const Sidebar: React.FC = () => {
                 }}
               >
                 <Pin className="w-3.5 h-3.5" /> {ctxTab.pinned ? 'Unpin tab' : 'Pin tab'}
+              </button>
+              <button
+                className={menuItem}
+                onClick={() => {
+                  focusTab(ctxTab.id, 'secondary');
+                  setCtx(null);
+                }}
+              >
+                <Columns2 className="w-3.5 h-3.5" /> Open in split pane
               </button>
               <div className="my-1 border-t border-zinc-800" />
               <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-zinc-500 flex items-center gap-1.5">

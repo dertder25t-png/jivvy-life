@@ -1,24 +1,24 @@
 mod logins;
 use tauri::{LogicalPosition, LogicalSize, WebviewBuilder, WebviewUrl, WindowBuilder};
 
-/// Linux: tauri-runtime-wry packs every child webview into the window's GtkBox, so
-/// they stack vertically and set_position/set_size are ignored. We wrap the main
-/// webview in a GtkOverlay and move pane webviews into it, positioned by margins.
 #[cfg(target_os = "linux")]
 mod linux {
     use gtk::prelude::*;
     use std::cell::RefCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     thread_local! {
         static OVERLAY: RefCell<Option<gtk::Overlay>> = const { RefCell::new(None) };
     }
+    // All webviews share one WebsiteDataManager; point its cookie store at disk exactly once.
+    static COOKIES_SET: AtomicBool = AtomicBool::new(false);
 
     pub fn wrap_main(wv: &gtk::Widget) {
         let Some(vbox) = wv.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) else {
             return;
         };
         let overlay = gtk::Overlay::new();
-        vbox.remove(wv); // `wv` holds a strong ref, so the widget survives the move
+        vbox.remove(wv);
         overlay.add(wv);
         vbox.pack_start(&overlay, true, true, 0);
         overlay.show_all();
@@ -29,6 +29,10 @@ mod linux {
         OVERLAY.with(|o| {
             let Some(overlay) = o.borrow().clone() else { return };
             let overlay_widget: &gtk::Widget = overlay.upcast_ref();
+            // A pane that was closed/destroyed has no parent: never re-add a dead widget.
+            if wv.parent().is_none() {
+                return;
+            }
             if wv.parent().as_ref() != Some(overlay_widget) {
                 if let Some(c) = wv.parent().and_then(|p| p.downcast::<gtk::Container>().ok()) {
                     c.remove(wv);
@@ -37,10 +41,116 @@ mod linux {
                 wv.set_valign(gtk::Align::Start);
                 overlay.add_overlay(wv);
             }
-            wv.set_margin_start(x.max(0));
-            wv.set_margin_top(y.max(0));
-            wv.set_size_request(w.max(1), h.max(1));
+            if wv.margin_start() != x.max(0) {
+                wv.set_margin_start(x.max(0));
+            }
+            if wv.margin_top() != y.max(0) {
+                wv.set_margin_top(y.max(0));
+            }
+            let (cur_w, cur_h) = wv.size_request();
+            if cur_w != w.max(1) || cur_h != h.max(1) {
+                wv.set_size_request(w.max(1), h.max(1));
+            }
         });
+    }
+
+    /// Sends target="_blank" links and window.open popups (Eagle's Nest, Canvas, SSO) to the
+    /// frontend as a new app tab instead of dropping them, enables persistent disk cookies, and
+    /// (for pane webviews) reports page title/URL changes so the tab label stays in sync.
+    pub fn configure_webkit(
+        wv: &webkit2gtk::WebView,
+        cookie_file: Option<std::path::PathBuf>,
+        app: tauri::AppHandle,
+        pane_label: Option<String>,
+    ) {
+        use tauri::Emitter;
+        use webkit2gtk::{
+            CookieManagerExt, CookiePersistentStorage, NavigationPolicyDecision,
+            NavigationPolicyDecisionExt, PolicyDecisionExt, PolicyDecisionType, SettingsExt,
+            URIRequestExt, WebViewExt, WebsiteDataManagerExt,
+        };
+
+        fn open_in_new_tab(app: &tauri::AppHandle, uri: &str) {
+            if uri.is_empty() || uri == "about:blank" {
+                return;
+            }
+            let _ = app.emit("lifeapp:new-tab", serde_json::json!({ "url": uri }));
+        }
+        // Mark the WebView object itself (labels are reused when a pane is recreated).
+        unsafe {
+            if wv.data::<bool>("jivvy-configured").is_some() {
+                return; // already configured: don't stack duplicate signal handlers
+            }
+            wv.set_data("jivvy-configured", true);
+        }
+        if let Some(settings) = WebViewExt::settings(wv) {
+            settings.set_javascript_can_open_windows_automatically(true);
+            settings.set_enable_back_forward_navigation_gestures(true);
+        }
+        if let Some(path) = cookie_file {
+            if !COOKIES_SET.swap(true, Ordering::SeqCst) {
+                if let Some(cm) = wv.website_data_manager().and_then(|d| d.cookie_manager()) {
+                    if let Some(p) = path.to_str() {
+                        cm.set_persistent_storage(p, CookiePersistentStorage::Sqlite);
+                    }
+                }
+            }
+        }
+        // target="_blank" links arrive as a NewWindowAction policy decision.
+        let app_policy = app.clone();
+        wv.connect_decide_policy(move |_webview, decision, decision_type| {
+            if decision_type == PolicyDecisionType::NewWindowAction {
+                if let Ok(nav_decision) = decision.clone().downcast::<NavigationPolicyDecision>() {
+                    if let Some(uri) = nav_decision
+                        .navigation_action()
+                        .and_then(|a| a.request())
+                        .and_then(|r| r.uri())
+                    {
+                        open_in_new_tab(&app_policy, &uri);
+                        decision.ignore();
+                        return true;
+                    }
+                }
+            }
+            false
+        });
+
+        // window.open() from page scripts arrives through the `create` signal instead.
+        let app_create = app.clone();
+        wv.connect_create(move |_webview, action| {
+            let action = action.clone();
+            if let Some(uri) = action.request().and_then(|r| r.uri()) {
+                open_in_new_tab(&app_create, &uri);
+            }
+            None
+        });
+
+        // Keep the owning tab's title/URL in sync with what the page actually shows.
+        if let Some(label) = pane_label {
+            // title/uri notify fire many times per load; only emit real changes.
+            let last = std::rc::Rc::new(RefCell::new((String::new(), String::new())));
+            let report = move |webview: &webkit2gtk::WebView| {
+                let url = webview.uri().map(|u| u.to_string()).unwrap_or_default();
+                if url.is_empty() || url == "about:blank" {
+                    return;
+                }
+                let title = webview.title().map(|t| t.to_string()).unwrap_or_default();
+                {
+                    let mut l = last.borrow_mut();
+                    if l.0 == url && l.1 == title {
+                        return;
+                    }
+                    *l = (url.clone(), title.clone());
+                }
+                let _ = app.emit(
+                    "lifeapp:page",
+                    serde_json::json!({ "label": label, "url": url, "title": title }),
+                );
+            };
+            let report_title = report.clone();
+            wv.connect_title_notify(move |w| report_title(w));
+            wv.connect_uri_notify(move |w| report(w));
+        }
     }
 }
 
@@ -69,12 +179,67 @@ fn place_pane(
     Ok(())
 }
 
+/// "appimage" when launched from an AppImage (the only build the updater can replace), else "native".
+#[tauri::command]
+fn install_kind() -> &'static str {
+    if std::env::var_os("APPIMAGE").is_some() {
+        "appimage"
+    } else {
+        "native"
+    }
+}
 
-// ---- Dashboard: laya (local NPU classifier) + daily brief ----
+#[tauri::command]
+fn configure_pane(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::Manager;
+        let wv = app.get_webview(&label).ok_or("unknown webview")?;
+        let cookie_path = app.path().app_data_dir().ok().map(|d| {
+            let _ = std::fs::create_dir_all(&d);
+            d.join("webkit_cookies.sqlite")
+        });
+        let handle = app.clone();
+        let pane_label = label.clone();
+        wv.with_webview(move |pw| {
+            linux::configure_webkit(&pw.inner(), cookie_path, handle, Some(pane_label));
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (app, label);
+    Ok(())
+}
+
+/// Navigate an existing pane in place (keeps its history; no close + recreate flash).
+#[tauri::command]
+fn load_pane(app: tauri::AppHandle, label: String, url: String) -> Result<(), String> {
+    use tauri::Manager;
+    if !(url.starts_with("http://") || url.starts_with("https://") || url == "about:blank") {
+        return Err("unsupported url".into());
+    }
+    let wv = app.get_webview(&label).ok_or("unknown webview")?;
+    let parsed = url.parse::<tauri::Url>().map_err(|e| e.to_string())?;
+    wv.navigate(parsed).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn nav_pane(app: tauri::AppHandle, label: String, action: String) -> Result<(), String> {
+    use tauri::Manager;
+    let wv = app.get_webview(&label).ok_or("unknown webview")?;
+    let js = match action.as_str() {
+        "back" => "window.history.back();",
+        "forward" => "window.history.forward();",
+        "reload" => "window.location.reload();",
+        // Hidden tab: stop audio/video so background tabs don't burn CPU.
+        "pause" => "document.querySelectorAll('video,audio').forEach(m=>{try{m.pause()}catch(e){}});",
+        _ => return Ok(()),
+    };
+    wv.eval(js).map_err(|e| e.to_string())
+}
 
 const LAYA_ADDR: &str = "127.0.0.1:8770";
 
-/// Minimal blocking HTTP/1.1 call to laya. None when it is down, slow, or answers non-200.
 fn laya_http(method: &str, path: &str, body: Option<&str>) -> Option<serde_json::Value> {
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpStream};
@@ -100,14 +265,12 @@ fn laya_http(method: &str, path: &str, body: Option<&str>) -> Option<serde_json:
     serde_json::from_str(rest).ok()
 }
 
-/// POST /decide {text} -> {ok, p_ai, ms}. None if laya is unavailable.
 #[tauri::command(async)]
 fn laya_classify(text: String) -> Option<serde_json::Value> {
     let body = serde_json::json!({ "text": text }).to_string();
     laya_http("POST", "/decide", Some(&body)).filter(|v| v.get("ok") == Some(&serde_json::Value::Bool(true)))
 }
 
-/// GET /health -> {ok, ready, device, infer_device, ...}. None if laya is unavailable.
 #[tauri::command(async)]
 fn laya_health() -> Option<serde_json::Value> {
     laya_http("GET", "/health", None)
@@ -118,14 +281,12 @@ fn brief_path() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(home).join(".local/share/hub-dashboard/brief/latest.json"))
 }
 
-/// Latest nightly Downloads brief written by downloads_sorter.py, or None.
 #[tauri::command(async)]
 fn read_brief() -> Option<serde_json::Value> {
     let txt = std::fs::read_to_string(brief_path()?).ok()?;
     serde_json::from_str(&txt).ok()
 }
 
-/// Open a folder/file with the desktop default handler (only inside the user's home).
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|e| e.to_string())?;
@@ -138,12 +299,35 @@ fn open_path(path: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMA-BUF renderer is behind the GBM/EGL heap-corruption crashes and the
+    // flicker seen on this hybrid Intel Arc + AMD Wayland laptop (Tauri's documented
+    // workaround). Set before GTK/WebKit start. JIVVY_GPU=1 opts back in for testing.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("JIVVY_GPU").is_none() && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // SAFETY: called at startup before any other threads exist.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![place_pane, laya_classify, laya_health, read_brief, open_path, logins::import_firefox_cookies, logins::import_passwords_csv, logins::logins_for, logins::fill_login, logins::forget_all_logins])
+        .invoke_handler(tauri::generate_handler![
+            place_pane,
+            install_kind,
+            configure_pane,
+            nav_pane,
+            load_pane,
+            laya_classify,
+            laya_health,
+            read_brief,
+            open_path,
+            logins::import_firefox_cookies,
+            logins::import_passwords_csv,
+            logins::logins_for,
+            logins::fill_login,
+            logins::forget_all_logins
+        ])
         .setup(|app| {
-            // Bare window + auto-resizing UI webview so pane webviews can be added as children.
+            use tauri::Manager;
             let (w, h) = (1440.0, 900.0);
             let window = WindowBuilder::new(app, "main")
                 .title("Jivvy Life")
@@ -156,12 +340,21 @@ pub fn run() {
                 LogicalSize::new(w, h),
             )?;
             #[cfg(target_os = "linux")]
-            _main.with_webview(|pw| {
-                use gtk::prelude::*;
-                linux::wrap_main(&pw.inner().upcast());
-            })?;
+            {
+                let cookie_path = app.path().app_data_dir().ok().map(|d| {
+                    let _ = std::fs::create_dir_all(&d);
+                    d.join("webkit_cookies.sqlite")
+                });
+                let handle = app.handle().clone();
+                _main.with_webview(move |pw| {
+                    use gtk::prelude::*;
+                    linux::wrap_main(&pw.inner().upcast());
+                    // Main UI: new-window links become tabs instead of replacing the app shell.
+                    linux::configure_webkit(&pw.inner(), cookie_path, handle, None);
+                })?;
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running Life App");
+        .expect("error while running Jivvy Life");
 }

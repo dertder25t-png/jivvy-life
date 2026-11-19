@@ -1,7 +1,7 @@
-# LIFE APP ALPHA V1 — MASTER BUILD & TOKEN-EFFICIENCY SPEC
+# JIVVY LIFE — MASTER BUILD & TOKEN-EFFICIENCY SPEC
 
 ## 1. GOAL
-Finish building **Life App v1** from this pre-built starter skeleton into a fully functional Alpha release ready for daily testing:
+Finish building **Jivvy Life v1** from this pre-built starter skeleton into a fully functional Alpha release ready for daily testing:
 - **Full Multi-Tab Browsing & Split-Pane Engine:** Unlimited web tabs, `Cmd/Ctrl + K` omnibox, back/forward/reload, pinned tabs, split-vertical view, dedicated Jivvy tab (`https://jivvy-study.vercel.app/`), and Tauri 2 native child `Webview` support with automatic `<iframe>` fallback in `npm run dev`.
 - **Customizable Tab & Sidebar Layouts:** Instant switching between `left-vertical` (default), `compact-rail` (auto-hiding 48px icon rail), `classic-top` (horizontal tab strip), and `zen` (chrome-less focus mode with floating command pill).
 - **Self-Contained Markdown Notes:** Native CodeMirror 6 editor with `[[wikilinks]]`, backlinks, tags, and local/Supabase persistence (no Obsidian required).

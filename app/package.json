@@ -1,13 +1,15 @@
 {
-  "name": "life-app",
-  "version": "0.2.1",
+  "name": "jivvy-life",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "app:dev": "tauri dev",
+    "app:install": "bash scripts/install.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",

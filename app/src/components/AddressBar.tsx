@@ -3,6 +3,8 @@ import { ArrowLeft, ArrowRight, RotateCw, Search, KeyRound } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { decide } from '../lib/router';
+import { setOverlay } from '../lib/overlay';
+import { useHoverIntent } from '../lib/useHoverIntent';
 import { NAV_EVENT } from './TopTabBar';
 
 function hostOf(url: string) {
@@ -36,25 +38,17 @@ export const AddressBar: React.FC = React.memo(() => {
   const openTab = useWorkspaceStore((s) => s.openTab);
   const navigateTab = useWorkspaceStore((s) => s.navigateTab);
   const autoHide = useWorkspaceStore((s) => s.autoHideAddressBar);
+  const activeHost = activeUrl ? hostOf(activeUrl) : '';
+  const activeUrlRef = useRef(activeUrl);
+  activeUrlRef.current = activeUrl;
   const [logins, setLogins] = useState<string[]>([]);
   const [pickOpen, setPickOpen] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const hideTimer = useRef<number | null>(null);
+  const { active: hovered, onEnter, onLeave, force: setHovered } = useHoverIntent(150, 400);
 
   const [value, setValue] = useState(activeUrl);
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const shown = !autoHide || hovered || focused;
-
-  const reveal = () => {
-    if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    hideTimer.current = null;
-    setHovered(true);
-  };
-  const scheduleHide = () => {
-    if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    hideTimer.current = window.setTimeout(() => setHovered(false), 350);
-  };
 
   // Ctrl/Cmd+L reveals and focuses the address bar, like a browser.
   useEffect(() => {
@@ -66,29 +60,27 @@ export const AddressBar: React.FC = React.memo(() => {
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    };
-  }, []);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setHovered]);
 
   // Offer a key button when saved logins exist for the active web tab's origin (Tauri only).
   useEffect(() => {
     setPickOpen(false);
     setLogins([]);
-    if (!('__TAURI_INTERNALS__' in window) || activeType !== 'web' || !activeUrl) return;
+    if (!('__TAURI_INTERNALS__' in window) || activeType !== 'web' || !activeHost) return;
     let live = true;
-    invoke<string[]>('logins_for', { origin: activeUrl })
+    invoke<string[]>('logins_for', { origin: activeUrlRef.current })
       .then((l) => live && setLogins(l))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [activeUrl, activeType, activeTabId]);
+  }, [activeHost, activeType, activeTabId]);
 
   // Native pane webviews paint above HTML: hide them while the picker is open.
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent('lifeapp:overlay', { detail: { open: pickOpen } }));
+    setOverlay('loginpicker', pickOpen);
+    return () => setOverlay('loginpicker', false);
   }, [pickOpen]);
 
   const fill = (username: string) => {
@@ -122,7 +114,7 @@ export const AddressBar: React.FC = React.memo(() => {
   };
 
   return (
-    <div onMouseEnter={reveal} onMouseLeave={scheduleHide} className="shrink-0">
+    <div onMouseEnter={onEnter} onMouseLeave={onLeave} className="shrink-0">
       {/* Hidden state: a thin hover strip along the top edge. Height switches instantly (no
           animation) so a native pane webview is repositioned once, not every frame. */}
       {!shown && <div className="h-1.5 bg-zinc-900 border-b border-zinc-800 hover:bg-zinc-800" title="Show address bar (Ctrl+L)" />}

@@ -7,7 +7,16 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    // Rust build artifacts would otherwise trigger full page reloads on every cargo rebuild.
     watch: { ignored: ['**/src-tauri/**'] },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          codemirror: ['@uiw/react-codemirror', '@codemirror/lang-markdown', '@codemirror/view', '@codemirror/autocomplete', '@codemirror/language'],
+          importer: ['jszip', 'sql.js'],
+        },
+      },
+    },
   },
 });

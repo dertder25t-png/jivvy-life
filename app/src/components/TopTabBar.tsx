@@ -5,7 +5,6 @@ import { WorkspaceTab } from '../types/workspace';
 import { OPEN_OMNIBOX_EVENT } from './ZenOmnibox';
 import { HamburgerMenu } from './HamburgerMenu';
 
-// Dispatched for navigation commands; the Tauri child-webview adapter listens for these.
 export const NAV_EVENT = 'lifeapp:nav';
 
 const TabIcon: React.FC<{ type: WorkspaceTab['type'] }> = ({ type }) => {
@@ -43,16 +42,18 @@ const TabChip = React.memo(({ tab, active, onFocus, onClose, onTogglePin }: TabC
     {tab.pinned && <Pin className="w-3 h-3 text-zinc-500 shrink-0 -rotate-45" />}
     <TabIcon type={tab.type} />
     <span className="truncate flex-1">{tab.title}</span>
-    <button
-      onClick={(e) => {
-        e.stopPropagation();
-        onClose(tab.id);
-      }}
-      title="Close tab"
-      className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-zinc-700 hover:text-red-400 transition-opacity"
-    >
-      <X className="w-3 h-3" />
-    </button>
+    {tab.type !== 'dashboard' && (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose(tab.id);
+        }}
+        title="Close tab"
+        className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-zinc-700 hover:text-red-400 transition-opacity"
+      >
+        <X className="w-3 h-3" />
+      </button>
+    )}
   </div>
 ));
 TabChip.displayName = 'TabChip';
@@ -69,7 +70,6 @@ export const TopTabBar: React.FC = () => {
     [workspaces, activeWorkspaceId]
   );
 
-  // Pinned tabs first, original order kept within each group.
   const tabs = useMemo(() => {
     if (!ws) return [];
     return [...ws.tabs.filter((t) => t.pinned), ...ws.tabs.filter((t) => !t.pinned)];
