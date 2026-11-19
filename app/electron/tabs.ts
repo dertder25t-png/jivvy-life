@@ -7,12 +7,14 @@ import { isAllowedTabUrl, type Action } from '../shared/state';
 import type { NavAction, RuntimeState, TabRuntime } from '../shared/ipc';
 import type { Rect } from '../shared/layout';
 import { hostOf, type Blocker } from './blocker';
+import type { HistoryStore } from './history';
 
 const log = (...a: unknown[]) => console.error('[tabs]', ...a);
 
 export interface TabHost {
   session: Session;
   blocker: Blocker;
+  history: HistoryStore;
   window(): BaseWindow;
   dispatch(a: Action): void;
   runtimeChanged(): void;
@@ -122,6 +124,7 @@ export class TabManager {
     wc.on('did-start-loading', () => this.setRt(id, { loading: true }));
     wc.on('did-stop-loading', () => {
       this.setRt(id, { loading: false });
+      if (this.recordable()) this.host.history.title(id, wc.getURL(), wc.getTitle());
       this.navState(id, wc);
     });
     wc.on('did-start-navigation', (d) => {
@@ -134,14 +137,19 @@ export class TabManager {
       const h = hostOf(url);
       if (h) this.host.blocker.topHost.set(wc.id, h);
       syncPage(url);
+      if (this.recordable()) this.host.history.visit(id, url, '', lt.attached);
       this.navState(id, wc);
     });
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (!isMainFrame) return;
       syncPage(url, wc.getTitle());
+      if (this.recordable()) this.host.history.visit(id, url, wc.getTitle(), lt.attached, true);
       this.navState(id, wc);
     });
-    wc.on('page-title-updated', (_e, title) => syncPage(wc.getURL() || lt.knownUrl, title));
+    wc.on('page-title-updated', (_e, title) => {
+      syncPage(wc.getURL() || lt.knownUrl, title);
+      if (this.recordable()) this.host.history.title(id, wc.getURL() || lt.knownUrl, title);
+    });
     wc.on('page-favicon-updated', (_e, icons) => this.setRt(id, { favicon: icons.find((u) => /^https?:|^data:image\//.test(u)) ?? null }));
     wc.on('audio-state-changed', (e) => this.setRt(id, { audible: !!e.audible }));
     wc.on('enter-html-full-screen', () => this.host.setFullscreen(id, true));
@@ -161,6 +169,11 @@ export class TabManager {
     });
   }
 
+  /** History is only kept for the normal persistent profile, never for in-memory (private) sessions. */
+  private recordable() {
+    return this.host.session.isPersistent();
+  }
+
   /** Show or hide a tab's view in the window. Pages go just above the base view (index 1). */
   attach(lt: LiveTab, on: boolean) {
     if (lt.attached === on) return;
@@ -168,6 +181,8 @@ export class TabManager {
     if (on) win.contentView.addChildView(lt.view, 1);
     else win.contentView.removeChildView(lt.view);
     lt.attached = on;
+    if (on) this.host.history.foreground(lt.id);
+    else this.host.history.background(lt.id);
     if (!on) lt.bounds = '';
   }
 
@@ -181,6 +196,7 @@ export class TabManager {
   destroy(id: string) {
     const lt = this.live.get(id);
     this.records.delete(id);
+    this.host.history.tabClosed(id);
     if (lt) {
       this.attach(lt, false);
       this.live.delete(id);
@@ -215,6 +231,8 @@ export class TabManager {
     this.host.blocker.topHost.delete(wc.id);
     if (!wc.isDestroyed()) wc.close();
     this.records.set(id, rec);
+    this.host.history.tabClosed(id);
+    this.host.history.skipNext(id); // restoring this tab later isn't a new visit
     this.setRt(id, { ...blankRuntime(), favicon: rec.favicon, discarded: true });
     return true;
   }

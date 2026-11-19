@@ -3,6 +3,7 @@
 
 import type { Action, PersistedState } from './state';
 import type { Rect } from './layout';
+import type { TypedInput, Visit } from './history-types';
 
 export interface TabRuntime {
   loading: boolean;
@@ -59,6 +60,26 @@ export interface OverlayMessage {
   win: { width: number; height: number };
 }
 
+/** One row of `history:search`: a page the user has visited, with how often and when last. */
+export interface HistoryHit {
+  url: string;
+  host: string;
+  title: string;
+  visits: number;
+  lastT: number;
+}
+
+export interface ImportStatus {
+  state: 'idle' | 'running' | 'done' | 'error';
+  imported: number;
+  skipped: number;
+  error?: string;
+  /** Epoch ms when the last import finished. */
+  at?: number;
+}
+
+export type HistoryClearRange = 'hour' | 'day' | 'all';
+
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
 
 export interface JivvyApi {
@@ -74,6 +95,14 @@ export interface JivvyApi {
   onOverlay(cb: (m: OverlayMessage) => void): () => void;
   emit(ev: UiEvent): void;
   onEvent(cb: (ev: UiEvent) => void): () => void;
+  /** Local browsing history (main-process sqlite). All of it is private to this machine. */
+  historyTyped(i: Omit<TypedInput, 't'>): void;
+  historySearch(text: string, limit?: number): Promise<HistoryHit[]>;
+  historyRecent(limit?: number): Promise<Visit[]>;
+  historyClear(range: HistoryClearRange): Promise<number>;
+  /** Opt-in, one shot: copy Firefox's history into the local store. Settings button calls this. */
+  historyImportFirefox(): Promise<ImportStatus>;
+  historyImportStatus(): Promise<ImportStatus>;
   /** Native commands (Tauri `invoke` equivalents). Unported ones reject with "not yet available". */
   invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T>;
 }
@@ -91,4 +120,10 @@ export const CH = {
   emit: 'jivvy:emit',
   event: 'jivvy:event',
   invoke: 'jivvy:invoke',
+  historyTyped: 'history:typed',
+  historySearch: 'history:search',
+  historyRecent: 'history:recent',
+  historyClear: 'history:clear',
+  historyImportFirefox: 'history:importFirefox',
+  historyImportStatus: 'history:importStatus',
 } as const;

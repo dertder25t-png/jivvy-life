@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { StateStore } from './store';
 import { TabManager } from './tabs';
 import { Blocker } from './blocker';
+import { HistoryStore } from './history';
 import { runSelfTest } from './selftest';
 import { validateAction, INTERNAL_ACTIONS, isAllowedTabUrl, type Action, type PersistedState } from '../shared/state';
 import { CH, HOVER_KINDS, BLUR_KINDS, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent } from '../shared/ipc';
@@ -95,6 +96,7 @@ let edge: WebContentsView | null = null; // invisible top-edge hover strip over 
 let edgeAttached = false;
 let store: StateStore;
 let tabs: TabManager;
+let history: HistoryStore;
 let pageSession: Session;
 const blocker = new Blocker();
 const runtime: RuntimeState = { tabs: {}, fullscreenTabId: null, overlay: null, blocking: { ready: false, rules: 0 } };
@@ -599,6 +601,28 @@ function registerIpc() {
     if (!isFromUi(e) || !shortStr(tabId, 128) || !['back', 'forward', 'reload', 'stop'].includes(action)) return;
     tabs.nav(tabId, action as NavAction);
   });
+  // ---- Local browsing history (validated; UI views only) ----
+  ipcMain.on(CH.historyTyped, (e, i) => {
+    if (!isFromUi(e) || !i || typeof i !== 'object') return;
+    const { text, url, shownUrl, accepted } = i as Record<string, unknown>;
+    if (!shortStr(text, 500) || typeof accepted !== 'boolean') return;
+    if (typeof url !== 'string' || url.length > 2048 || (shownUrl !== undefined && shownUrl !== null && (typeof shownUrl !== 'string' || shownUrl.length > 2048))) return;
+    history.typed({ text, url, shownUrl: (shownUrl as string | null | undefined) || undefined, accepted });
+  });
+  ipcMain.handle(CH.historySearch, (e, text, limit) => {
+    if (!isFromUi(e) || typeof text !== 'string' || text.length > 200 || !(limit === undefined || (Number.isInteger(limit) && limit >= 1))) return [];
+    return history.search(text, Math.min(20, (limit as number | undefined) ?? 8));
+  });
+  ipcMain.handle(CH.historyRecent, (e, limit) => {
+    if (!isFromUi(e) || !(limit === undefined || (Number.isInteger(limit) && limit >= 1))) return [];
+    return history.recent(Math.min(200, (limit as number | undefined) ?? 20));
+  });
+  ipcMain.handle(CH.historyClear, (e, range) => {
+    if (!isFromUi(e) || !(range === 'hour' || range === 'day' || range === 'all')) return 0;
+    return history.clear(range);
+  });
+  ipcMain.handle(CH.historyImportFirefox, (e) => (isFromUi(e) ? history.importFirefox() : { state: 'error', imported: 0, skipped: 0, error: 'Rejected' }));
+  ipcMain.handle(CH.historyImportStatus, (e) => (isFromUi(e) ? history.importStatus() : { state: 'idle', imported: 0, skipped: 0 }));
   ipcMain.on(CH.setMuted, (e, tabId, muted) => {
     if (isFromUi(e) && shortStr(tabId, 128) && typeof muted === 'boolean') tabs.setMuted(tabId, muted);
   });
@@ -763,12 +787,14 @@ if (!app.requestSingleInstanceLock()) {
     Menu.setApplicationMenu(null);
     store = new StateStore(app.getPath('userData'));
     store.onChange(onStoreChange);
+    history = new HistoryStore(app.getPath('userData'), () => store.state.saveHistory);
     setupUiSession();
     setupPageSession();
     tabs = new TabManager(
       {
         session: pageSession,
         blocker,
+        history,
         window: () => win!,
         dispatch: (a: Action) => store.dispatch(a),
         runtimeChanged,
@@ -795,11 +821,15 @@ if (!app.requestSingleInstanceLock()) {
         tabs,
         runtime,
         blocker,
+        history,
         layoutInput,
         snapshotOnly: SNAPSHOT && !SELFTEST,
       });
     }
   });
-  app.on('before-quit', () => store?.flushSync());
+  app.on('before-quit', () => {
+    store?.flushSync();
+    history?.close();
+  });
   app.on('window-all-closed', () => app.quit());
 }

@@ -21,6 +21,12 @@ const api: JivvyApi = {
   onOverlay: (cb) => listen(CH.overlay, cb),
   emit: (ev) => ipcRenderer.send(CH.emit, ev),
   onEvent: (cb) => listen(CH.event, cb),
+  historyTyped: (i) => ipcRenderer.send(CH.historyTyped, i),
+  historySearch: (text, limit) => ipcRenderer.invoke(CH.historySearch, text, limit),
+  historyRecent: (limit) => ipcRenderer.invoke(CH.historyRecent, limit),
+  historyClear: (range) => ipcRenderer.invoke(CH.historyClear, range),
+  historyImportFirefox: () => ipcRenderer.invoke(CH.historyImportFirefox),
+  historyImportStatus: () => ipcRenderer.invoke(CH.historyImportStatus),
   invoke: async <T,>(cmd: string, args?: Record<string, unknown>) => {
     const r = (await ipcRenderer.invoke(CH.invoke, cmd, args ?? {})) as { ok: boolean; value?: T; error?: string };
     if (!r?.ok) throw new Error(r?.error || 'Command failed');

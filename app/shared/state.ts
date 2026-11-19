@@ -32,6 +32,8 @@ export interface Prefs {
   zenBarPosition: ZenBarPosition;
   blockingEnabled: boolean;
   blockingDisabledSites: string[];
+  /** Keep a local browsing history (powers suggestions). Off = record nothing. */
+  saveHistory: boolean;
 }
 
 export interface PersistedState extends Prefs {
@@ -53,6 +55,7 @@ export const PERSISTED_KEYS: Array<keyof PersistedState> = [
   'zenBarPosition',
   'blockingEnabled',
   'blockingDisabledSites',
+  'saveHistory',
 ];
 
 export const DEFAULT_PREFS: Prefs = {
@@ -63,6 +66,7 @@ export const DEFAULT_PREFS: Prefs = {
   zenBarPosition: 'left',
   blockingEnabled: true,
   blockingDisabledSites: [],
+  saveHistory: true,
 };
 
 const nowIso = () => new Date().toISOString();
@@ -161,6 +165,7 @@ export function hydrate(raw: Partial<PersistedState> | null | undefined): Persis
     zenBarPosition: r.zenBarPosition === 'top' || r.zenBarPosition === 'bottom' ? r.zenBarPosition : 'left',
     blockingEnabled: bool('blockingEnabled'),
     blockingDisabledSites: Array.isArray(r.blockingDisabledSites) ? cleanSites(r.blockingDisabledSites) : [],
+    saveHistory: bool('saveHistory'),
   };
 }
 
