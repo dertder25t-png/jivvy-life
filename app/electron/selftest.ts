@@ -312,8 +312,9 @@ export async function runSelfTest(ctx: TestCtx) {
       if (mode === 'compact-rail') {
         // Hover the rail: the expanded rail floats over the page; the page doesn't move.
         const b0 = bounds('tab_t0');
-        base().sendInputEvent({ type: 'mouseEnter', x: 20, y: 300 });
-        base().sendInputEvent({ type: 'mouseMove', x: 20, y: 300 });
+        // Enter from outside the view like a real pointer: a bare mouseEnter at the target is not
+        // a hover transition once the rail has shrunk under it (test-only quirk, not an app bug).
+        await hoverBase(20, 300);
         const railOk = await waitFor(() => runtime.overlay?.kind === 'rail' && !!ctx.overlayRect(), 3000);
         await sleep(300);
         result(railOk && rectEq(bounds('tab_t0'), b0), 'compact rail hover: floating rail over unmoved page', `overlay ${fmt(ctx.overlayRect())}`);
