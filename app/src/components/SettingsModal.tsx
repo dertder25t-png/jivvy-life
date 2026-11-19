@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { X, Database } from 'lucide-react';
 import { nativeInvoke as invoke, isTauri, isNative, isElectron, jivvy } from '../platform';
 import { usePredictions } from '../lib/predictions';
-import type { HistoryClearRange, ImportStatus } from '../../shared/ipc';
+import type { HistoryClearRange, ImportStatus, MemoryStatus } from '../../shared/ipc';
+import { MAX_AWAKE_MAX, MAX_AWAKE_MIN } from '../../shared/state';
 import type { BenchResult } from '../../shared/lifeboard/bench';
 import { nightly } from '../../shared/lifeboard/evallog';
 import type { EvalLine } from '../../shared/lifeboard/evallog';
@@ -22,6 +23,69 @@ const Toggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean)
     <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-indigo-500 w-4 h-4" />
   </label>
 );
+
+const SLEEP_LABELS: Array<[number, string]> = [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [0, 'Never']];
+
+/** Electron memory saver: policies plus live numbers from main. */
+const MemorySection: React.FC = () => {
+  const { sleepAfterMin, maxAwakeTabs, memoryGuard, keepPinnedAwake, setSleepAfterMin, setMaxAwakeTabs, setMemoryGuard, setKeepPinnedAwake } = useWorkspaceStore(
+    useShallow((st) => ({ sleepAfterMin: st.sleepAfterMin, maxAwakeTabs: st.maxAwakeTabs, memoryGuard: st.memoryGuard, keepPinnedAwake: st.keepPinnedAwake, setSleepAfterMin: st.setSleepAfterMin, setMaxAwakeTabs: st.setMaxAwakeTabs, setMemoryGuard: st.setMemoryGuard, setKeepPinnedAwake: st.setKeepPinnedAwake }))
+  );
+  const [mem, setMem] = useState<MemoryStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const refresh = useCallback(() => invoke<MemoryStatus>('memory_status').then(setMem).catch(() => {}), []);
+  useEffect(() => {
+    void refresh();
+    const t = window.setInterval(() => void refresh(), 2000);
+    return () => window.clearInterval(t);
+  }, [refresh]);
+  const sleepAll = async () => {
+    setBusy(true);
+    try {
+      const n = await invoke<number>('sleep_background');
+      setMsg(n ? `Put ${n} tab${n === 1 ? '' : 's'} to sleep.` : 'No background tabs could sleep (active, audible, pinned or unsaved tabs stay awake).');
+      await refresh();
+    } catch {
+      setMsg('Could not sleep tabs.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sel = 'bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-indigo-500';
+  return (
+    <div className="space-y-2 border-t border-zinc-800 pt-3" data-section="memory">
+      <h4 className="text-xs font-semibold text-zinc-200">Memory</h4>
+      <label className="flex items-center justify-between text-xs text-zinc-300">
+        <span>Sleep tabs after</span>
+        <select aria-label="Sleep tabs after" value={sleepAfterMin} onChange={(e) => setSleepAfterMin(Number(e.target.value))} className={sel}>
+          {SLEEP_LABELS.map(([v, l]) => (
+            <option key={v} value={v}>{l}</option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center justify-between text-xs text-zinc-300">
+        <span>Max awake tabs</span>
+        <span className="flex items-center gap-2">
+          <input aria-label="Max awake tabs" type="range" min={MAX_AWAKE_MIN} max={MAX_AWAKE_MAX} value={maxAwakeTabs} onChange={(e) => setMaxAwakeTabs(Number(e.target.value))} className="accent-indigo-500 w-28" />
+          <span className="w-5 text-right tabular-nums">{maxAwakeTabs}</span>
+        </span>
+      </label>
+      <Toggle label="Sleep background tabs when memory runs low" checked={memoryGuard} onChange={setMemoryGuard} />
+      <Toggle label="Keep pinned tabs awake" checked={keepPinnedAwake} onChange={setKeepPinnedAwake} />
+      <p className="text-xs text-zinc-500">Sleeping tabs keep their place and wake where you left off. Tabs playing audio, with unsaved typing, or in fullscreen never sleep.</p>
+      <div className="text-xs text-zinc-300 bg-zinc-900 rounded px-2 py-1.5 space-y-0.5">
+        <div className="flex justify-between"><span>App memory</span><span className="tabular-nums">{mem ? `${mem.totalMB.toLocaleString()} MB` : '...'}</span></div>
+        <div className="flex justify-between"><span>Tabs awake / sleeping</span><span className="tabular-nums">{mem ? `${mem.awake} / ${mem.sleeping}` : '...'}</span></div>
+        {mem?.availableMB != null && <div className="flex justify-between"><span>System memory available</span><span className="tabular-nums">{mem.availableMB.toLocaleString()} MB</span></div>}
+      </div>
+      <button disabled={busy} onClick={() => void sleepAll()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
+        Sleep all background tabs now
+      </button>
+      {msg && <p className="text-xs text-indigo-300">{msg}</p>}
+    </div>
+  );
+};
 
 export const SettingsModal: React.FC = () => {
   // Pick only what this modal shows (a bare useWorkspaceStore() re-renders on every store patch).
@@ -384,6 +448,8 @@ export const SettingsModal: React.FC = () => {
             {histMsg && <p className="text-xs text-indigo-300">{histMsg}</p>}
           </div>
         )}
+
+        {isElectron && <MemorySection />}
 
         {isNative && (
           <div className="space-y-2 border-t border-zinc-800 pt-3">

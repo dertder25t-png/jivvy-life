@@ -12,6 +12,7 @@ import { Blocker } from './blocker';
 import { HistoryStore } from './history';
 import { Trainer } from './trainer';
 import { lagOp, startLagMon } from './lagmon';
+import { MemorySaver, readProcMeminfo } from './memsaver';
 import { runSelfTest } from './selftest';
 import { Logins } from './logins';
 import { readBrief, openPath } from './native';
@@ -100,6 +101,7 @@ let edge: WebContentsView | null = null; // invisible top-edge hover strip over 
 let edgeAttached = false;
 let store: StateStore;
 let tabs: TabManager;
+let memsaver: MemorySaver;
 let history: HistoryStore;
 let trainer: Trainer;
 let logins: Logins;
@@ -260,6 +262,7 @@ function reconcile() {
   for (const [id, lt] of tabs.live) if (!want.includes(id)) tabs.attach(lt, false);
   for (const id of want) tabs.attach(tabs.ensure(id, all.get(id)!.url!), true);
   applyLayout();
+  memsaver?.kick();
 
   // Focus follows the primary tab, like a browser.
   const primary = ws?.primaryTabId ?? null;
@@ -283,6 +286,7 @@ function onStoreChange(changed: Partial<PersistedState>, prev: PersistedState) {
     const b = chromeInsets(store.state);
     if (a.sidebar && b.sidebar && a.left !== b.left && a.top === b.top) animateLeft(animLeft ?? a.left, b.left);
   }
+  if ('maxAwakeTabs' in changed || 'sleepAfterMin' in changed || 'keepPinnedAwake' in changed) memsaver?.kick();
   if ('workspaces' in changed || 'activeWorkspaceId' in changed) reconcile();
   else applyLayout();
 }
@@ -595,6 +599,31 @@ async function command(cmd: string, args: Record<string, unknown>): Promise<unkn
       return null; // laya/NPU is disabled on this branch (Phase 2)
     case 'blocking_status':
       return { ready: blocker.ready, rules: blocker.rules, enabled: blocker.enabled };
+    case 'memory_status': {
+      const m = readProcMeminfo();
+      const total = app.getAppMetrics().reduce((n, p) => n + p.memory.workingSetSize, 0) / 1024;
+      return {
+        totalMB: Math.round(total),
+        awake: tabs.live.size,
+        sleeping: Object.values(runtime.tabs).filter((t) => t.sleeping).length,
+        availableMB: m ? Math.round(m.availableMB) : null,
+      };
+    }
+    case 'sleep_tab':
+      if (!shortStr(args.tabId, 128) || !args.tabId) throw new Error('Bad tab');
+      return memsaver.sleepOne(args.tabId, true);
+    case 'wake_tab': {
+      if (!shortStr(args.tabId, 128) || !args.tabId) throw new Error('Bad tab');
+      const t = store.state.workspaces.flatMap((w) => w.tabs).find((x) => x.id === args.tabId);
+      if (!t?.url || !isPageTab(t)) return false;
+      tabs.wake(t.id, t.url);
+      return true;
+    }
+    case 'sleep_background':
+      return memsaver.sleepAllBackground();
+    case 'free_memory':
+      if (typeof args.targetMB !== 'number' || !(args.targetMB > 0) || args.targetMB > 1_000_000) throw new Error('Bad target');
+      return memsaver.freeMemory(args.targetMB);
     case 'install_kind':
       return 'electron';
     case 'set_blocking':
@@ -869,9 +898,23 @@ if (!app.requestSingleInstanceLock()) {
         setFullscreen,
         handleKeys: (e, input, tabId) => handleKeys(e, input, tabId, 'page'),
         guardPage,
+        state: () => store.state,
       },
       runtime
     );
+    memsaver = new MemorySaver({
+      tabs,
+      runtime,
+      state: () => store.state,
+      tabMB: (id) => {
+        const wc = tabs.webContentsOf(id);
+        const pid = wc?.getOSProcessId();
+        const m = pid ? app.getAppMetrics().find((p) => p.pid === pid) : undefined;
+        return m ? m.memory.workingSetSize / 1024 : 150;
+      },
+    });
+    memsaver.auto = !SELFTEST && !SNAPSHOT;
+    memsaver.start();
     registerIpc();
     logGpuOnce();
     createWindow();
@@ -886,6 +929,7 @@ if (!app.requestSingleInstanceLock()) {
         overlayRect: () => ovRect,
         store,
         tabs,
+        memsaver,
         runtime,
         blocker,
         history,
@@ -897,6 +941,7 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.on('before-quit', () => {
     store?.flushSync();
+    memsaver?.stop();
     trainer?.stop();
     history?.close();
   });

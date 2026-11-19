@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo } from 'react';
 import { Globe, FileText, BookOpen, X, Plus, Pin, LayoutDashboard } from 'lucide-react';
+import { SleepBadge, useSleeping } from './Sidebar';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { togglePaneMute } from './PaneContainer';
 import { WorkspaceTab } from '../types/workspace';
@@ -42,17 +43,20 @@ interface TabChipProps {
   onTogglePin: (id: string) => void;
 }
 
-const TabChip = React.memo(({ tab, active, onFocus, onClose, onTogglePin }: TabChipProps) => (
+const TabChip = React.memo(({ tab, active, onFocus, onClose, onTogglePin }: TabChipProps) => {
+  const sleeping = useSleeping(tab.id);
+  return (
   <div
     role="tab"
     aria-selected={active}
     onClick={() => onFocus(tab.id)}
     onContextMenu={(e) => {
       e.preventDefault();
-      onTogglePin(tab.id);
+      if (isElectron) openOverlay({ kind: 'tabmenu', tabId: tab.id, x: e.clientX, y: e.clientY });
+      else onTogglePin(tab.id);
     }}
-    title={tab.pinned ? 'Right-click to unpin' : 'Right-click to pin'}
-    className={`group relative flex items-center gap-2 h-8 max-w-[220px] min-w-[120px] pl-3 pr-1.5 rounded-t-md text-xs cursor-pointer transition-colors duration-150 ${
+    title={isElectron ? undefined : tab.pinned ? 'Right-click to unpin' : 'Right-click to pin'}
+    className={`group relative flex items-center gap-2 h-8 max-w-[220px] min-w-[120px] pl-3 pr-1.5 rounded-t-md text-xs cursor-pointer transition-colors duration-150 ${sleeping ? 'opacity-60' : ''} ${
       active
         ? 'bg-zinc-800 text-zinc-100'
         : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
@@ -62,6 +66,7 @@ const TabChip = React.memo(({ tab, active, onFocus, onClose, onTogglePin }: TabC
     {tab.pinned && <Pin className="w-3 h-3 text-zinc-500 shrink-0 -rotate-45" />}
     <TabIcon type={tab.type} />
     <span className="truncate flex-1">{tab.title}</span>
+    <SleepBadge tabId={tab.id} />
     <AudioBadge tabId={tab.id} />
     {tab.type !== 'dashboard' && (
       <button
@@ -76,7 +81,8 @@ const TabChip = React.memo(({ tab, active, onFocus, onClose, onTogglePin }: TabC
       </button>
     )}
   </div>
-));
+  );
+});
 TabChip.displayName = 'TabChip';
 
 export const TopTabBar: React.FC = () => {

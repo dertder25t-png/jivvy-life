@@ -59,6 +59,10 @@ interface WorkspaceState extends PersistedState {
   setAutoHideAddressBar: (v: boolean) => void;
   setShowTopBar: (v: boolean) => void;
   setSaveHistory: (v: boolean) => void;
+  setSleepAfterMin: (v: number) => void;
+  setMaxAwakeTabs: (v: number) => void;
+  setMemoryGuard: (v: boolean) => void;
+  setKeepPinnedAwake: (v: boolean) => void;
   setClearTabsOnStart: (v: boolean) => void;
   setShowFolders: (v: boolean) => void;
   setZenBarPosition: (v: ZenBarPosition) => void;
@@ -140,6 +144,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     setAutoHideAddressBar: pref('autoHideAddressBar'),
     setShowTopBar: pref('showTopBar'),
     setSaveHistory: pref('saveHistory'),
+    setSleepAfterMin: pref('sleepAfterMin'),
+    setMaxAwakeTabs: pref('maxAwakeTabs'),
+    setMemoryGuard: pref('memoryGuard'),
+    setKeepPinnedAwake: pref('keepPinnedAwake'),
     setClearTabsOnStart: pref('clearTabsOnStart'),
     setShowFolders: pref('showFolders'),
     setZenBarPosition: pref('zenBarPosition'),

@@ -3,7 +3,7 @@
 // A tab can also be discarded (webContents destroyed, record kept) to save memory; it is
 // recreated from the record when shown again.
 import { WebContentsView, type BaseWindow, type Input, type Session, type WebContents, type WebPreferences } from 'electron';
-import { isAllowedTabUrl, type Action } from '../shared/state';
+import { isAllowedTabUrl, type Action, type PersistedState } from '../shared/state';
 import type { NavAction, RuntimeState, TabRuntime } from '../shared/ipc';
 import type { Rect } from '../shared/layout';
 import { hostOf, type Blocker } from './blocker';
@@ -23,6 +23,8 @@ export interface TabHost {
   handleKeys(e: Electron.Event, input: Input, tabId: string): void;
   /** Apply nav guards and new-window rules to any page webContents (tabs and popups). */
   guardPage(wc: WebContents): void;
+  /** Current persisted state (pinned flags, prefs). */
+  state(): PersistedState;
 }
 
 export interface LiveTab {
@@ -33,6 +35,16 @@ export interface LiveTab {
   attached: boolean;
   bounds: string;
   restoreScroll?: number;
+  /** When it last was (or stopped being) in front; LRU order for the memory saver. */
+  lastUsed: number;
+  /** When the current load started, for the "loading < 10 s" never-sleep rule. */
+  loadingSince: number;
+}
+
+export interface NavEntry {
+  url: string;
+  title: string;
+  pageState?: string;
 }
 
 interface TabRecord {
@@ -40,7 +52,35 @@ interface TabRecord {
   title: string;
   favicon: string | null;
   scrollY: number;
+  entries: NavEntry[];
+  index: number;
 }
+
+/** Page background shown while a woken tab loads, so it doesn't flash white (theme zinc-950). */
+export const THEME_BG = '#09090b';
+const FAVICON_MAX = 64 * 1024;
+
+/** Page-side check for unsaved input. Dispatches a synthetic beforeunload to see if a handler wants to block. */
+const DIRTY_JS = `(() => {
+  try {
+    for (const el of document.querySelectorAll('input,textarea,[contenteditable]')) {
+      if (el.matches('[contenteditable]')) {
+        if (el.isContentEditable && (el.textContent || '').trim()) return true;
+        continue;
+      }
+      if (el instanceof HTMLTextAreaElement) { if (el.value !== el.defaultValue) return true; continue; }
+      const t = (el.type || '').toLowerCase();
+      if (t === 'hidden' || t === 'submit' || t === 'button' || t === 'reset' || t === 'image' || t === 'file') continue;
+      if (t === 'checkbox' || t === 'radio') { if (el.checked !== el.defaultChecked) return true; continue; }
+      if (el.value !== el.defaultValue) return true;
+    }
+    if (typeof window.onbeforeunload === 'function') return true;
+    const ev = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(ev);
+    if (ev.defaultPrevented || (typeof ev.returnValue === 'string' && ev.returnValue !== '')) return true;
+    return false;
+  } catch { return false; }
+})()`;
 
 const blankRuntime = (): TabRuntime => ({
   loading: false,
@@ -49,7 +89,7 @@ const blankRuntime = (): TabRuntime => ({
   audible: false,
   muted: false,
   favicon: null,
-  discarded: false,
+  sleeping: false,
 });
 
 export class TabManager {
@@ -85,20 +125,41 @@ export class TabManager {
     this.setRt(id, { canGoBack: wc.navigationHistory.canGoBack(), canGoForward: wc.navigationHistory.canGoForward() });
   }
 
-  /** The live tab for `id`, creating its view (and loading `url`) if needed. */
+  /** The live tab for `id`, creating its view (and loading `url`) if needed. A sleeping tab wakes where it left off. */
   ensure(id: string, url: string): LiveTab {
     const have = this.live.get(id);
     if (have) return have;
     const rec = this.records.get(id);
     this.records.delete(id);
+    // A sleeping tab whose URL was changed meanwhile (address bar) starts fresh at the new URL.
+    const woke = rec && rec.url === url ? rec : undefined;
     const view = new WebContentsView({ webPreferences: this.prefs() });
-    view.setBackgroundColor('#ffffff');
-    const lt: LiveTab = { id, view, knownUrl: url, attached: false, bounds: '', restoreScroll: rec?.scrollY };
+    view.setBackgroundColor(rec ? THEME_BG : '#ffffff');
+    const now = Date.now();
+    const lt: LiveTab = { id, view, knownUrl: url, attached: false, bounds: '', restoreScroll: woke?.scrollY, lastUsed: now, loadingSince: now };
     this.live.set(id, lt);
     this.wire(lt);
+    if (rec) view.webContents.once('dom-ready', () => view.setBackgroundColor('#ffffff'));
     this.setRt(id, { ...blankRuntime(), favicon: rec?.favicon ?? null, loading: true });
-    this.load(lt, url);
+    if (!woke || !this.restoreHistory(lt, woke)) this.load(lt, url);
     return lt;
+  }
+
+  /** Bring back the back/forward list of a woken tab. False = not possible, caller loads the URL. */
+  private restoreHistory(lt: LiveTab, rec: TabRecord): boolean {
+    if (rec.entries.length < 2 || !rec.entries.every((e) => isAllowedTabUrl(e.url))) return false;
+    const h = lt.view.webContents.navigationHistory as unknown as { restore?: (o: { index: number; entries: NavEntry[] }) => Promise<void> };
+    if (typeof h.restore !== 'function') return false;
+    try {
+      lt.knownUrl = rec.url;
+      h.restore({ index: rec.index, entries: rec.entries }).catch((e: Error) => {
+        log('history restore failed', String(e).slice(0, 120));
+        this.load(lt, rec.url);
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   load(lt: LiveTab, url: string) {
@@ -121,7 +182,10 @@ export class TabManager {
       lt.knownUrl = url;
       this.host.dispatch({ type: 'syncTabFromPage', tabId: id, url, title });
     };
-    wc.on('did-start-loading', () => this.setRt(id, { loading: true }));
+    wc.on('did-start-loading', () => {
+      if (!this.runtime.tabs[id]?.loading) lt.loadingSince = Date.now();
+      this.setRt(id, { loading: true });
+    });
     wc.on('did-stop-loading', () => {
       this.setRt(id, { loading: false });
       if (this.recordable()) this.host.history.title(id, wc.getURL(), wc.getTitle());
@@ -150,7 +214,11 @@ export class TabManager {
       syncPage(wc.getURL() || lt.knownUrl, title);
       if (this.recordable()) this.host.history.title(id, wc.getURL() || lt.knownUrl, title);
     });
-    wc.on('page-favicon-updated', (_e, icons) => this.setRt(id, { favicon: icons.find((u) => /^https?:|^data:image\//.test(u)) ?? null }));
+    wc.on('page-favicon-updated', (_e, icons) => {
+      const u = icons.find((x) => /^https?:|^data:image\//.test(x)) ?? null;
+      this.setRt(id, { favicon: u });
+      if (u && u.startsWith('http')) void this.cacheFavicon(id, u);
+    });
     wc.on('audio-state-changed', (e) => this.setRt(id, { audible: !!e.audible }));
     wc.on('enter-html-full-screen', () => this.host.setFullscreen(id, true));
     wc.on('leave-html-full-screen', () => this.host.setFullscreen(id, false));
@@ -181,6 +249,7 @@ export class TabManager {
     if (on) win.contentView.addChildView(lt.view, 1);
     else win.contentView.removeChildView(lt.view);
     lt.attached = on;
+    lt.lastUsed = Date.now();
     if (on) this.host.history.foreground(lt.id);
     else this.host.history.background(lt.id);
     if (!on) lt.bounds = '';
@@ -204,6 +273,7 @@ export class TabManager {
       this.host.blocker.topHost.delete(wc.id);
       if (!wc.isDestroyed()) wc.close();
     }
+    this.faviconData.delete(id);
     if (id in this.runtime.tabs) {
       const { [id]: _gone, ...rest } = this.runtime.tabs;
       this.runtime.tabs = rest;
@@ -211,30 +281,108 @@ export class TabManager {
     }
   }
 
+  /** Fetch a small favicon once and keep it as a data URL, so a sleeping tab can show it without the network. */
+  private async cacheFavicon(id: string, url: string) {
+    try {
+      const res = await this.host.session.fetch(url, { signal: AbortSignal.timeout(4000) });
+      const type = res.headers.get('content-type') ?? '';
+      if (!res.ok || !/^image\//.test(type)) return;
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (!buf.length || buf.length > FAVICON_MAX) return;
+      this.faviconData.set(id, { src: url, data: `data:${type.split(';')[0]};base64,${buf.toString('base64')}` });
+    } catch {
+      /* keep the plain URL */
+    }
+  }
+  private faviconData = new Map<string, { src: string; data: string }>();
+
   /**
-   * Memory saver hook (Phase 3 decides when): destroy a hidden tab's webContents but keep its
-   * url/title/favicon/scroll so `ensure` can bring it back where it was.
+   * Why `id` must stay awake right now, or null if it may sleep. `manual` (the user asked)
+   * skips only the pinned rule; audio, unsaved input, fullscreen and fresh loads still protect.
+   * The page check is capped at 100 ms; a page too busy to answer stays awake.
    */
-  async discard(id: string) {
+  async sleepBlocker(id: string, manual = false): Promise<{ reason: string; scrollY: number } | { reason: null; scrollY: number }> {
     const lt = this.live.get(id);
-    if (!lt || lt.attached) return false;
+    if (!lt) return { reason: 'not awake', scrollY: 0 };
     const wc = lt.view.webContents;
+    if (lt.attached) return { reason: 'active', scrollY: 0 };
+    if (this.runtime.fullscreenTabId === id) return { reason: 'fullscreen', scrollY: 0 };
+    if (this.runtime.tabs[id]?.audible || (!wc.isDestroyed() && wc.isCurrentlyAudible())) return { reason: 'audio', scrollY: 0 };
+    if (!manual && this.host.state().keepPinnedAwake && this.isPinned(id)) return { reason: 'pinned', scrollY: 0 };
+    if (this.runtime.tabs[id]?.loading && Date.now() - lt.loadingSince < 10_000) return { reason: 'loading', scrollY: 0 };
+    if (wc.isDestroyed()) return { reason: 'destroyed', scrollY: 0 };
     let scrollY = 0;
     try {
-      scrollY = Number(await wc.executeJavaScript('window.scrollY')) || 0;
+      const r = await Promise.race([
+        wc.executeJavaScript(`({ y: window.scrollY, dirty: ${DIRTY_JS} })`) as Promise<{ y: number; dirty: boolean }>,
+        new Promise<null>((res) => setTimeout(() => res(null), 100)),
+      ]);
+      if (r === null) return { reason: 'busy', scrollY: 0 };
+      if (r.dirty) return { reason: 'unsaved input', scrollY: 0 };
+      scrollY = Number(r.y) || 0;
     } catch {
-      /* page busy or crashed: start at the top */
+      /* crashed or about:blank-like page: nothing to lose */
     }
+    return { reason: null, scrollY };
+  }
+
+  private isPinned(id: string) {
+    for (const w of this.host.state().workspaces) if (w.tabs.some((t) => t.id === id && t.pinned)) return true;
+    return false;
+  }
+
+  /**
+   * Put a background tab to sleep: destroy its webContents but keep url/title/favicon/scroll and
+   * the back/forward list, so `ensure` brings it back where it was. False = it must stay awake.
+   */
+  async sleep(id: string, opts: { manual?: boolean } = {}): Promise<boolean> {
+    const lt = this.live.get(id);
+    if (!lt) return false;
+    const chk = await this.sleepBlocker(id, opts.manual);
+    if (chk.reason) return false;
     if (this.live.get(id) !== lt || lt.attached) return false;
-    const rec: TabRecord = { url: lt.knownUrl, title: wc.getTitle(), favicon: this.runtime.tabs[id]?.favicon ?? null, scrollY };
+    const wc = lt.view.webContents;
+    let entries: NavEntry[] = [];
+    let index = 0;
+    try {
+      const h = wc.navigationHistory;
+      entries = h.getAllEntries().map((e) => ({ url: e.url, title: e.title, ...(e.pageState ? { pageState: e.pageState } : {}) }));
+      index = h.getActiveIndex();
+      if (entries.length > 50) {
+        const drop = entries.length - 50;
+        entries = entries.slice(drop);
+        index = Math.max(0, index - drop);
+      }
+    } catch {
+      entries = [];
+    }
+    const fav = this.runtime.tabs[id]?.favicon ?? null;
+    const cached = this.faviconData.get(id);
+    const rec: TabRecord = {
+      url: lt.knownUrl,
+      title: wc.getTitle(),
+      favicon: cached && cached.src === fav ? cached.data : fav,
+      scrollY: chk.scrollY,
+      entries,
+      index,
+    };
     this.live.delete(id);
     this.host.blocker.topHost.delete(wc.id);
     if (!wc.isDestroyed()) wc.close();
     this.records.set(id, rec);
     this.host.history.tabClosed(id);
-    this.host.history.skipNext(id); // restoring this tab later isn't a new visit
-    this.setRt(id, { ...blankRuntime(), favicon: rec.favicon, discarded: true });
+    this.host.history.skipNext(id); // waking this tab later isn't a new visit
+    this.setRt(id, { ...blankRuntime(), favicon: rec.favicon, sleeping: true });
     return true;
+  }
+
+  /** Bring a sleeping tab back in the background (no-op if awake). */
+  wake(id: string, url: string): LiveTab {
+    return this.ensure(id, url);
+  }
+
+  isSleeping(id: string) {
+    return !this.live.has(id) && this.records.has(id);
   }
 
   nav(id: string, action: NavAction) {

@@ -14,8 +14,18 @@ export interface TabRuntime {
   audible: boolean;
   muted: boolean;
   favicon: string | null;
-  /** Webcontents destroyed to save memory; the record (url/title/favicon/scroll) is kept. */
-  discarded: boolean;
+  /** Asleep: webcontents destroyed to save memory; the record (url/title/favicon/scroll/history) is kept. */
+  sleeping: boolean;
+}
+
+/** Live numbers for Settings -> Memory. */
+export interface MemoryStatus {
+  /** Sum of working sets across all app processes (MB). */
+  totalMB: number;
+  awake: number;
+  sleeping: number;
+  /** System MemAvailable (MB), or null when unreadable (not Linux). */
+  availableMB: number | null;
 }
 
 /** Things that float over web pages. Rendered by the overlay view, positioned by main. */

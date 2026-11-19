@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Pin, Globe, FileText, Plus, X, BookOpen, LayoutDashboard, Folder, FolderOpen, FolderPlus, ChevronRight, ChevronDown, Pencil, Trash2, FolderInput, Columns2, EyeOff, Eye } from 'lucide-react';
+import { Pin, Globe, FileText, Plus, X, BookOpen, LayoutDashboard, Folder, FolderOpen, FolderPlus, ChevronRight, ChevronDown, Pencil, Trash2, FolderInput, Columns2, EyeOff, Eye, Moon, Sun } from 'lucide-react';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { togglePaneMute } from './PaneContainer';
 import { WorkspaceTab, TabFolder } from '../types/workspace';
 import { HamburgerMenu } from './HamburgerMenu';
 import { ConfirmDialog } from './ConfirmDialog';
 import { setOverlay } from '../lib/overlay';
-import { floatsToOverlay, isElectron, isOverlayRole, jivvy, openOverlay, portalTarget, viewport } from '../platform';
+import { floatsToOverlay, isElectron, isOverlayRole, jivvy, nativeInvoke, openOverlay, portalTarget, viewport } from '../platform';
 import { LAYOUT, EASE_CSS } from '../../shared/layout';
 
 const DRAG_MIME = 'application/x-lifeapp-tab';
@@ -41,6 +41,11 @@ const AudioBadge: React.FC<{ tabId: string }> = ({ tabId }) => {
   );
 };
 
+/** Electron memory saver: this tab's page is unloaded until it is opened again. */
+export const useSleeping = (tabId: string) => useWorkspaceStore((s) => !!s.runtime.tabs[tabId]?.sleeping);
+export const SleepBadge: React.FC<{ tabId: string }> = ({ tabId }) =>
+  useSleeping(tabId) ? <Moon aria-label="Sleeping tab" className="w-3 h-3 shrink-0 text-indigo-300/80"><title>Sleeping to save memory</title></Moon> : null;
+
 interface TabRowProps {
   tab: WorkspaceTab;
   active: boolean;
@@ -53,7 +58,9 @@ interface TabRowProps {
   onMenu: (id: string, x: number, y: number) => void;
 }
 
-const TabRow = React.memo(({ tab, active, compact, lbl, indent, onFocus, onClose, onTogglePin, onMenu }: TabRowProps) => (
+const TabRow = React.memo(({ tab, active, compact, lbl, indent, onFocus, onClose, onTogglePin, onMenu }: TabRowProps) => {
+  const sleeping = useSleeping(tab.id);
+  return (
   <div
     draggable
     onDragStart={(e) => {
@@ -65,13 +72,14 @@ const TabRow = React.memo(({ tab, active, compact, lbl, indent, onFocus, onClose
       e.preventDefault();
       onMenu(tab.id, e.clientX, e.clientY);
     }}
-    className={`rail-item group flex items-center justify-between gap-2 py-1.5 rounded text-xs cursor-pointer ${indent ? 'pl-5 pr-2' : 'px-2'} ${
+    className={`rail-item group flex items-center justify-between gap-2 py-1.5 rounded text-xs cursor-pointer ${indent ? 'pl-5 pr-2' : 'px-2'} ${sleeping ? 'opacity-60' : ''} ${
       active ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
     }`}
   >
     <div className="flex items-center gap-2 min-w-0">
       <TabIcon type={tab.type} />
       <span className={`truncate min-w-0 ${lbl}`}>{tab.title}</span>
+      <SleepBadge tabId={tab.id} />
       <AudioBadge tabId={tab.id} />
     </div>
     <div className={`flex items-center gap-1 shrink-0 ${compact ? lbl : ''}`}>
@@ -100,7 +108,8 @@ const TabRow = React.memo(({ tab, active, compact, lbl, indent, onFocus, onClose
       )}
     </div>
   </div>
-));
+  );
+});
 TabRow.displayName = 'TabRow';
 
 interface FolderHeaderProps {
@@ -226,6 +235,7 @@ export const TabContextMenu: React.FC<{
   const allFolders = useWorkspaceStore((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.folders);
   const folders = showFolders ? allFolders ?? [] : [];
   const { togglePin, focusTab, moveTabToFolder, createFolder, closeTab } = useWorkspaceStore.getState();
+  const sleeping = useSleeping(tabId);
   if (!ctxTab) return null;
   const vp = viewport();
   return (
@@ -242,6 +252,17 @@ export const TabContextMenu: React.FC<{
       >
         <Pin className="w-3.5 h-3.5" /> {ctxTab.pinned ? 'Unpin tab' : 'Pin tab'}
       </button>
+      {isElectron && ctxTab.type !== 'dashboard' && ctxTab.type !== 'note' && (
+        <button
+          className={menuItem}
+          onClick={() => {
+            void nativeInvoke(sleeping ? 'wake_tab' : 'sleep_tab', { tabId: ctxTab.id }).catch(() => {});
+            onClose();
+          }}
+        >
+          {sleeping ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />} {sleeping ? 'Wake tab' : 'Sleep tab'}
+        </button>
+      )}
       <button
         className={menuItem}
         onClick={() => {

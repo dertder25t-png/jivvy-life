@@ -34,7 +34,19 @@ export interface Prefs {
   blockingDisabledSites: string[];
   /** Keep a local browsing history (powers suggestions). Off = record nothing. */
   saveHistory: boolean;
+  /** Memory saver: put background tabs to sleep after this many minutes (0 = never). */
+  sleepAfterMin: number;
+  /** Memory saver: at most this many tabs keep a live page; least recently used ones sleep. */
+  maxAwakeTabs: number;
+  /** Memory saver: sleep background tabs when the machine runs low on free memory (Linux). */
+  memoryGuard: boolean;
+  /** Memory saver: pinned tabs never sleep. */
+  keepPinnedAwake: boolean;
 }
+
+export const SLEEP_AFTER_OPTIONS = [5, 15, 30, 60, 0] as const;
+export const MAX_AWAKE_MIN = 2;
+export const MAX_AWAKE_MAX = 20;
 
 export interface PersistedState extends Prefs {
   workspaces: WorkspaceManifest[];
@@ -56,6 +68,10 @@ export const PERSISTED_KEYS: Array<keyof PersistedState> = [
   'blockingEnabled',
   'blockingDisabledSites',
   'saveHistory',
+  'sleepAfterMin',
+  'maxAwakeTabs',
+  'memoryGuard',
+  'keepPinnedAwake',
 ];
 
 export const DEFAULT_PREFS: Prefs = {
@@ -67,6 +83,10 @@ export const DEFAULT_PREFS: Prefs = {
   blockingEnabled: true,
   blockingDisabledSites: [],
   saveHistory: true,
+  sleepAfterMin: 30,
+  maxAwakeTabs: 6,
+  memoryGuard: true,
+  keepPinnedAwake: true,
 };
 
 const nowIso = () => new Date().toISOString();
@@ -166,6 +186,10 @@ export function hydrate(raw: Partial<PersistedState> | null | undefined): Persis
     blockingEnabled: bool('blockingEnabled'),
     blockingDisabledSites: Array.isArray(r.blockingDisabledSites) ? cleanSites(r.blockingDisabledSites) : [],
     saveHistory: bool('saveHistory'),
+    sleepAfterMin: (SLEEP_AFTER_OPTIONS as readonly unknown[]).includes(r.sleepAfterMin) ? (r.sleepAfterMin as number) : DEFAULT_PREFS.sleepAfterMin,
+    maxAwakeTabs: Number.isInteger(r.maxAwakeTabs) ? Math.min(MAX_AWAKE_MAX, Math.max(MAX_AWAKE_MIN, r.maxAwakeTabs as number)) : DEFAULT_PREFS.maxAwakeTabs,
+    memoryGuard: bool('memoryGuard'),
+    keepPinnedAwake: bool('keepPinnedAwake'),
   };
 }
 
@@ -451,6 +475,8 @@ export function validateAction(x: unknown): Action | null {
       if (k === 'zenBarPosition') return a.value === 'left' || a.value === 'top' || a.value === 'bottom' ? (a as Action) : null;
       if (k === 'blockingDisabledSites')
         return Array.isArray(a.value) && a.value.length <= MAX_BLOCK_SITES * 2 && a.value.every((v) => str(v, 300)) ? (a as Action) : null;
+      if (k === 'sleepAfterMin') return (SLEEP_AFTER_OPTIONS as readonly unknown[]).includes(a.value) ? (a as Action) : null;
+      if (k === 'maxAwakeTabs') return Number.isInteger(a.value) && (a.value as number) >= MAX_AWAKE_MIN && (a.value as number) <= MAX_AWAKE_MAX ? (a as Action) : null;
       return typeof a.value === 'boolean' ? (a as Action) : null;
     }
     case 'clearAllTabs':
