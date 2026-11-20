@@ -11,6 +11,7 @@ import { normalizeHost } from '../services/blocking';
 import { jivvy, isElectron, isNative, isTauri, floatsToOverlay, nativeInvoke as invoke, openOverlay } from '../platform';
 import { LAYOUT, chromeInsets } from '../../shared/layout';
 import type { SuggestItem } from '../../shared/ipc';
+import { DownloadsButton } from './Downloads';
 
 const MAX_ROWS = 6;
 /** Show an address without its scheme and trailing slash, like a browser does in its list. */
@@ -382,6 +383,7 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
         />
         {decision && value.trim() && <span className="text-[10px] text-zinc-500 shrink-0">{decision.route === 'open-url' ? '→ ' : ''}{decision.label}</span>}
       </div>
+      <DownloadsButton />
       {isNative && activeType === 'web' && siteHost && blockingEnabled && (
         <button
           type="button"

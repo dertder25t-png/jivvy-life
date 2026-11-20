@@ -7,6 +7,7 @@ import { WorkspaceTab, TabFolder } from '../types/workspace';
 import { HamburgerMenu } from './HamburgerMenu';
 import { ConfirmDialog } from './ConfirmDialog';
 import { setOverlay } from '../lib/overlay';
+import { DownloadsButton } from './Downloads';
 import { floatsToOverlay, isElectron, isOverlayRole, jivvy, nativeInvoke, openOverlay, portalTarget, viewport } from '../platform';
 import { LAYOUT, EASE_CSS } from '../../shared/layout';
 
@@ -585,7 +586,8 @@ export const Sidebar: React.FC<{ floating?: boolean; onLeave?: () => void; onEnt
             ))}
         </div>
 
-        <div className="p-2 border-t border-zinc-800 flex items-center">
+        <div className={`p-2 border-t border-zinc-800 flex gap-1 ${compact ? 'flex-col' : 'items-center'}`}>
+          <DownloadsButton className="p-1.5" />
           <HamburgerMenu placement="up" />
         </div>
       </aside>

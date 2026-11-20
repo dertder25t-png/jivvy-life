@@ -4,7 +4,7 @@ import { X, Database } from 'lucide-react';
 import { nativeInvoke as invoke, isTauri, isNative, isElectron, jivvy } from '../platform';
 import { usePredictions } from '../lib/predictions';
 import type { HistoryClearRange, ImportStatus, MemoryStatus } from '../../shared/ipc';
-import { MAX_AWAKE_MAX, MAX_AWAKE_MIN } from '../../shared/state';
+import { MAX_AWAKE_MAX, MAX_AWAKE_MIN, type PromptPermission } from '../../shared/state';
 import type { BenchResult } from '../../shared/lifeboard/bench';
 import { nightly } from '../../shared/lifeboard/evallog';
 import type { EvalLine } from '../../shared/lifeboard/evallog';
@@ -23,6 +23,49 @@ const Toggle: React.FC<{ label: string; checked: boolean; onChange: (v: boolean)
     <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-indigo-500 w-4 h-4" />
   </label>
 );
+
+const PERM_LABEL: Record<string, string> = {
+  camera: 'Camera',
+  microphone: 'Microphone',
+  geolocation: 'Location',
+  notifications: 'Notifications',
+  'clipboard-read': 'Clipboard (read)',
+  midi: 'MIDI devices',
+};
+
+/** Electron: what each site was allowed or blocked from using; removing a row makes it ask again. */
+const SitePermissionsSection: React.FC = () => {
+  const sitePermissions = useWorkspaceStore((st) => st.sitePermissions);
+  const remove = useWorkspaceStore((st) => st.removeSitePermission);
+  const origins = Object.keys(sitePermissions);
+  return (
+    <div className="space-y-2 border-t border-zinc-800 pt-3" data-site-permissions>
+      <h4 className="text-xs font-semibold text-zinc-200">Site permissions</h4>
+      <p className="text-xs text-zinc-500">Sites ask before using your camera, microphone, location, notifications, clipboard or MIDI. Remove an entry and the site will ask again.</p>
+      {origins.length === 0 && <p className="text-xs text-zinc-500">No saved decisions.</p>}
+      {origins.map((origin) => (
+        <div key={origin} className="text-xs text-zinc-300 bg-zinc-900 rounded px-2 py-1.5 space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="truncate font-medium">{origin.replace(/^https?:\/\//, '')}</span>
+            <button onClick={() => remove(origin)} title="Forget every decision for this site" className="text-zinc-400 hover:text-zinc-100 text-[11px] shrink-0 ml-2">
+              Remove all
+            </button>
+          </div>
+          {Object.entries(sitePermissions[origin]).map(([perm, decision]) => (
+            <div key={perm} data-site-permission={`${origin}|${perm}`} className="flex items-center justify-between pl-2">
+              <span>
+                {PERM_LABEL[perm] ?? perm}: <span className={decision === 'allow' ? 'text-emerald-300' : 'text-red-300'}>{decision === 'allow' ? 'Allowed' : 'Blocked'}</span>
+              </span>
+              <button onClick={() => remove(origin, perm as PromptPermission)} title={`Forget ${PERM_LABEL[perm] ?? perm} for this site`} className="text-zinc-400 hover:text-zinc-100">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+};
 
 const SLEEP_LABELS: Array<[number, string]> = [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [0, 'Never']];
 
@@ -492,6 +535,8 @@ export const SettingsModal: React.FC = () => {
             <p className="text-[10px] text-zinc-500">Filter lists: EasyList &amp; EasyPrivacy (easylist.to), CC BY-SA 3.0</p>
           </div>
         )}
+
+        {isElectron && <SitePermissionsSection />}
 
         {isNative && (
           <div className="space-y-2 border-t border-zinc-800 pt-3">

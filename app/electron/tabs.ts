@@ -25,6 +25,12 @@ export interface TabHost {
   guardPage(wc: WebContents): void;
   /** Current persisted state (pinned flags, prefs). */
   state(): PersistedState;
+  contextMenu(tabId: string, wc: WebContents, params: Electron.ContextMenuParams): void;
+  foundInPage(tabId: string, r: Electron.Result): void;
+  /** Ctrl+wheel on the page. */
+  zoomChanged(tabId: string, dir: 'in' | 'out'): void;
+  /** A main-frame navigation finished: put the page at its site's saved zoom. */
+  applyZoom(wc: WebContents): void;
 }
 
 export interface LiveTab {
@@ -47,7 +53,7 @@ export interface NavEntry {
   pageState?: string;
 }
 
-interface TabRecord {
+export interface TabRecord {
   url: string;
   title: string;
   favicon: string | null;
@@ -105,7 +111,7 @@ export class TabManager {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
-      spellcheck: false,
+      spellcheck: true,
       plugins: true, // built-in PDF viewer
       safeDialogs: true,
     };
@@ -201,6 +207,7 @@ export class TabManager {
       const h = hostOf(url);
       if (h) this.host.blocker.topHost.set(wc.id, h);
       syncPage(url);
+      this.host.applyZoom(wc);
       if (this.recordable()) this.host.history.visit(id, url, '', lt.attached);
       this.navState(id, wc);
     });
@@ -223,6 +230,9 @@ export class TabManager {
     wc.on('enter-html-full-screen', () => this.host.setFullscreen(id, true));
     wc.on('leave-html-full-screen', () => this.host.setFullscreen(id, false));
     wc.on('before-input-event', (e, input) => this.host.handleKeys(e, input, id));
+    wc.on('context-menu', (_e, params) => this.host.contextMenu(id, wc, params));
+    wc.on('found-in-page', (_e, r) => this.host.foundInPage(id, r));
+    wc.on('zoom-changed', (_e, dir) => this.host.zoomChanged(id, dir));
     wc.on('did-finish-load', () => {
       if (lt.restoreScroll) {
         const y = Math.max(0, Math.round(lt.restoreScroll));
@@ -331,17 +341,8 @@ export class TabManager {
     return false;
   }
 
-  /**
-   * Put a background tab to sleep: destroy its webContents but keep url/title/favicon/scroll and
-   * the back/forward list, so `ensure` brings it back where it was. False = it must stay awake.
-   */
-  async sleep(id: string, opts: { manual?: boolean } = {}): Promise<boolean> {
-    const lt = this.live.get(id);
-    if (!lt) return false;
-    const chk = await this.sleepBlocker(id, opts.manual);
-    if (chk.reason) return false;
-    if (this.live.get(id) !== lt || lt.attached) return false;
-    const wc = lt.view.webContents;
+  /** The back/forward list (capped to 50 entries around the current one). */
+  private historyOf(wc: WebContents): { entries: NavEntry[]; index: number } {
     let entries: NavEntry[] = [];
     let index = 0;
     try {
@@ -356,6 +357,38 @@ export class TabManager {
     } catch {
       entries = [];
     }
+    return { entries, index };
+  }
+
+  /** What a closing tab leaves behind for "reopen closed tab" (call before `destroy`). Null = nothing worth keeping. */
+  snapshot(id: string, url: string, title: string): TabRecord | null {
+    if (!isAllowedTabUrl(url) || url === 'about:blank') return null;
+    const lt = this.live.get(id);
+    if (lt && !lt.view.webContents.isDestroyed()) {
+      const { entries, index } = this.historyOf(lt.view.webContents);
+      return { url, title, favicon: null, scrollY: 0, entries, index };
+    }
+    const rec = this.records.get(id);
+    return rec ? { ...rec, url, title } : { url, title, favicon: null, scrollY: 0, entries: [], index: 0 };
+  }
+
+  /** Seed a tab that does not exist yet so `ensure` brings it up with this back/forward list. */
+  stash(id: string, rec: TabRecord) {
+    this.records.set(id, rec);
+  }
+
+  /**
+   * Put a background tab to sleep: destroy its webContents but keep url/title/favicon/scroll and
+   * the back/forward list, so `ensure` brings it back where it was. False = it must stay awake.
+   */
+  async sleep(id: string, opts: { manual?: boolean } = {}): Promise<boolean> {
+    const lt = this.live.get(id);
+    if (!lt) return false;
+    const chk = await this.sleepBlocker(id, opts.manual);
+    if (chk.reason) return false;
+    if (this.live.get(id) !== lt || lt.attached) return false;
+    const wc = lt.view.webContents;
+    const { entries, index } = this.historyOf(wc);
     const fav = this.runtime.tabs[id]?.favicon ?? null;
     const cached = this.faviconData.get(id);
     const rec: TabRecord = {

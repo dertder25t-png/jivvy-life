@@ -48,11 +48,24 @@ export const SLEEP_AFTER_OPTIONS = [5, 15, 30, 60, 0] as const;
 export const MAX_AWAKE_MIN = 2;
 export const MAX_AWAKE_MAX = 20;
 
+export type PermDecision = 'allow' | 'block';
+/** The powerful permissions a site may ask for (camera and microphone are split out of Chromium's `media`). */
+export const PROMPT_PERMISSIONS = ['camera', 'microphone', 'geolocation', 'notifications', 'clipboard-read', 'midi'] as const;
+export type PromptPermission = (typeof PROMPT_PERMISSIONS)[number];
+/** origin -> permission -> the user's remembered answer. */
+export type SitePermissions = Record<string, Partial<Record<PromptPermission, PermDecision>>>;
+export const MAX_SITE_ENTRIES = 500;
+export const ZOOM_MIN = 25;
+export const ZOOM_MAX = 500;
+
 export interface PersistedState extends Prefs {
   workspaces: WorkspaceManifest[];
   activeWorkspaceId: string;
   notes: NoteDocument[];
   layoutMode: LayoutMode;
+  /** Page zoom in percent by host (100 = absent). */
+  siteZoom: Record<string, number>;
+  sitePermissions: SitePermissions;
 }
 
 export const PERSISTED_KEYS: Array<keyof PersistedState> = [
@@ -60,6 +73,8 @@ export const PERSISTED_KEYS: Array<keyof PersistedState> = [
   'activeWorkspaceId',
   'notes',
   'layoutMode',
+  'siteZoom',
+  'sitePermissions',
   'showTopBar',
   'clearTabsOnStart',
   'autoHideAddressBar',
@@ -163,6 +178,32 @@ export function cleanSites(v: unknown[]): string[] {
   return [...new Set(v.map((x) => normalizeHost(String(x))).filter((x): x is string => !!x))].slice(0, MAX_BLOCK_SITES);
 }
 
+const isPromptPerm = (v: unknown): v is PromptPermission => (PROMPT_PERMISSIONS as readonly unknown[]).includes(v);
+const HOST_RE = /^[a-z0-9.\-[\]:]{1,253}$/;
+
+function cleanZoom(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const [h, p] of Object.entries(v as Record<string, unknown>)) {
+    if (HOST_RE.test(h) && Number.isInteger(p) && (p as number) >= ZOOM_MIN && (p as number) <= ZOOM_MAX && p !== 100) out[h] = p as number;
+    if (Object.keys(out).length >= MAX_SITE_ENTRIES) break;
+  }
+  return out;
+}
+
+function cleanPerms(v: unknown): SitePermissions {
+  const out: SitePermissions = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const [origin, perms] of Object.entries(v as Record<string, unknown>)) {
+    if (origin.length > 300 || !perms || typeof perms !== 'object') continue;
+    const clean: SitePermissions[string] = {};
+    for (const [k, d] of Object.entries(perms as Record<string, unknown>)) if (isPromptPerm(k) && (d === 'allow' || d === 'block')) clean[k] = d;
+    if (Object.keys(clean).length) out[origin] = clean;
+    if (Object.keys(out).length >= MAX_SITE_ENTRIES) break;
+  }
+  return out;
+}
+
 /** Build a valid state from whatever was on disk (or nothing). */
 export function hydrate(raw: Partial<PersistedState> | null | undefined): PersistedState {
   const r = raw && typeof raw === 'object' ? raw : {};
@@ -178,6 +219,8 @@ export function hydrate(raw: Partial<PersistedState> | null | undefined): Persis
     activeWorkspaceId: workspaces.some((w) => w.id === r.activeWorkspaceId) ? (r.activeWorkspaceId as string) : workspaces[0].id,
     notes: Array.isArray(r.notes) ? r.notes : defaultNotes(),
     layoutMode: modes.includes(r.layoutMode as LayoutMode) ? (r.layoutMode as LayoutMode) : 'left-vertical',
+    siteZoom: cleanZoom(r.siteZoom),
+    sitePermissions: cleanPerms(r.sitePermissions),
     showTopBar: bool('showTopBar'),
     clearTabsOnStart,
     autoHideAddressBar: bool('autoHideAddressBar'),
@@ -218,10 +261,14 @@ export type Action =
   | { type: 'createNote'; note: NoteDocument; tabId: string }
   | { type: 'renameNote'; noteId: string; title: string }
   | { type: 'importData'; groups: ImportedWorkspaceGroup[]; notes: NoteDocument[] }
-  | { type: 'applyPulled'; workspaces?: WorkspaceManifest[]; notes?: NoteDocument[]; layoutMode?: LayoutMode };
+  | { type: 'applyPulled'; workspaces?: WorkspaceManifest[]; notes?: NoteDocument[]; layoutMode?: LayoutMode }
+  | { type: 'setSiteZoom'; host: string; percent: number }
+  | { type: 'setSitePermission'; origin: string; permission: PromptPermission; value: PermDecision }
+  /** Settings -> Site permissions: forget one answer, or every answer for the origin. */
+  | { type: 'removeSitePermission'; origin: string; permission?: PromptPermission };
 
 /** Actions only the main process may issue (page events), never accepted over IPC. */
-export const INTERNAL_ACTIONS = new Set<Action['type']>(['syncTabFromPage']);
+export const INTERNAL_ACTIONS = new Set<Action['type']>(['syncTabFromPage', 'setSiteZoom', 'setSitePermission']);
 
 function mapActive(s: PersistedState, fn: (ws: WorkspaceManifest) => WorkspaceManifest): PersistedState {
   return { ...s, workspaces: s.workspaces.map((ws) => (ws.id === s.activeWorkspaceId ? fn(ws) : ws)) };
@@ -402,6 +449,28 @@ export function reduce(s: PersistedState, a: Action): PersistedState {
         activeWorkspaceId: newWorkspaces[0]?.id || s.activeWorkspaceId,
       };
     }
+    case 'setSiteZoom': {
+      const { [a.host]: old, ...rest } = s.siteZoom;
+      if (a.percent === 100) return old === undefined ? s : { ...s, siteZoom: rest };
+      if (old === a.percent) return s;
+      // Newest last; the oldest entries fall off at the cap.
+      const entries = Object.entries({ ...rest, [a.host]: a.percent }).slice(-MAX_SITE_ENTRIES);
+      return { ...s, siteZoom: Object.fromEntries(entries) };
+    }
+    case 'setSitePermission': {
+      if (s.sitePermissions[a.origin]?.[a.permission] === a.value) return s;
+      const { [a.origin]: _o, ...others } = s.sitePermissions;
+      const entries = Object.entries({ ...others, [a.origin]: { ...(s.sitePermissions[a.origin] ?? {}), [a.permission]: a.value } }).slice(-MAX_SITE_ENTRIES);
+      return { ...s, sitePermissions: Object.fromEntries(entries) };
+    }
+    case 'removeSitePermission': {
+      const cur = s.sitePermissions[a.origin];
+      if (!cur) return s;
+      const { [a.origin]: _o, ...others } = s.sitePermissions;
+      if (!a.permission) return { ...s, sitePermissions: others };
+      const { [a.permission]: _p, ...left } = cur;
+      return { ...s, sitePermissions: Object.keys(left).length ? { ...others, [a.origin]: left } : others };
+    }
     case 'applyPulled': {
       const workspaces = a.workspaces ? a.workspaces.map(withDashboard) : s.workspaces;
       return {
@@ -532,6 +601,12 @@ export function validateAction(x: unknown): Action | null {
         (a.layoutMode === undefined || MODES.includes(a.layoutMode as LayoutMode))
         ? (a as Action)
         : null;
+    case 'setSiteZoom':
+      return str(a.host, 253) && HOST_RE.test(a.host as string) && Number.isInteger(a.percent) && (a.percent as number) >= ZOOM_MIN && (a.percent as number) <= ZOOM_MAX ? (a as Action) : null;
+    case 'setSitePermission':
+      return str(a.origin, 300) && isPromptPerm(a.permission) && (a.value === 'allow' || a.value === 'block') ? (a as Action) : null;
+    case 'removeSitePermission':
+      return str(a.origin, 300) && (a.permission === undefined || isPromptPerm(a.permission)) ? (a as Action) : null;
     default:
       return null;
   }

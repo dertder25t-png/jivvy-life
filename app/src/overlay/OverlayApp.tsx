@@ -13,6 +13,8 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { OmniboxPalette } from '../components/ZenOmnibox';
 import { AddressBar, SuggestRows } from '../components/AddressBar';
 import { ZenBarContent } from '../App';
+import { Hud } from './Hud';
+import { DownloadsPanel } from '../components/Downloads';
 
 const ImportWizard = lazy(() => import('../components/ImportWizard').then((m) => ({ default: m.ImportWizard })));
 const SettingsModal = lazy(() => import('../components/SettingsModal').then((m) => ({ default: m.SettingsModal })));
@@ -115,6 +117,10 @@ const Surface: React.FC<{ spec: OverlaySpec; win: { width: number; height: numbe
           <ZenBarContent />
         </HoverSurface>
       );
+    case 'hud':
+      return <Hud anchor={spec.anchor} />;
+    case 'downloads':
+      return <DownloadsPanel anchor={spec.anchor} />;
     case 'suggest':
       return (
         <div style={{ position: 'fixed', left: spec.anchor.x, top: spec.anchor.y, width: spec.anchor.width }}>
@@ -209,7 +215,7 @@ export default function OverlayApp() {
   useEffect(() => {
     if (!msg?.spec) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) close();
+      if (e.key === 'Escape' && !e.defaultPrevented && msg.spec?.kind !== 'hud') close();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

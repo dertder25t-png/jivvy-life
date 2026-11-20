@@ -2,7 +2,7 @@
 // One BaseWindow holding: the base UI view (full window, app chrome), the web page views
 // (WebContentsViews placed by main from shared layout constants) and one transparent overlay
 // view for anything that floats over the pages. Main owns all state (see store.ts).
-import { app, BaseWindow, WebContentsView, ipcMain, session, Menu, protocol, net, screen, type Input, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents, type Session } from 'electron';
+import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, session, Menu, protocol, net, screen, type Input, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents, type Session } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -15,9 +15,14 @@ import { lagOp, startLagMon } from './lagmon';
 import { MemorySaver, readProcMeminfo } from './memsaver';
 import { runSelfTest } from './selftest';
 import { Logins } from './logins';
+import { Downloads } from './downloads';
+import { Permissions } from './permissions';
+import { buildPageMenu, type MenuDeps } from './contextmenu';
+import { decide } from '../shared/lifeboard/router';
+import { levelFor, percentFor, stepZoom } from '../shared/zoom';
 import { readBrief, openPath } from './native';
 import { validateAction, INTERNAL_ACTIONS, isAllowedTabUrl, type Action, type PersistedState } from '../shared/state';
-import { CH, HOVER_KINDS, BLUR_KINDS, type SuggestItem, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent, type ImportStatus } from '../shared/ipc';
+import { CH, HOVER_KINDS, BLUR_KINDS, EMPTY_HUD, type HudState, type SuggestItem, type NavAction, type OverlaySpec, type RuntimeState, type StatePatch, type UiEvent, type ImportStatus } from '../shared/ipc';
 import { LAYOUT, addressBarRect, chromeInsets, cubicBezier, edgeStripRect, pageRects, type Rect } from '../shared/layout';
 
 const log = (...a: unknown[]) => console.error('[jivvy]', ...a);
@@ -63,35 +68,6 @@ const DEV_CSP = CSP.replace("script-src 'self' 'wasm-unsafe-eval'", "script-src 
   `connect-src 'self' https: ${DEV_URL.replace(/^http/, 'ws')}`
 );
 
-// ---- Permissions for web pages ---------------------------------------------------------------
-// Powerful permissions are denied without a prompt. Notifications and camera/mic are allowed only
-// for sites the user allowed (no UI for that yet in Phase 1, so: denied).
-const DENY = new Set([
-  'geolocation',
-  'midi',
-  'midiSysex',
-  'openExternal',
-  'hid',
-  'serial',
-  'usb',
-  'idle-detection',
-  'display-capture',
-  'window-management',
-  'speaker-selection',
-  'keyboardLock',
-  'fileSystem',
-  'clipboard-read',
-  'storage-access',
-  'top-level-storage-access',
-  'mediaKeySystem',
-]);
-const USER_ALLOWABLE = new Set(['notifications', 'media']);
-const userAllowed = new Map<string, Set<string>>(); // origin -> permissions (Phase 2 adds UI)
-function pagePermission(permission: string, origin: string): boolean {
-  if (USER_ALLOWABLE.has(permission)) return !!userAllowed.get(origin)?.has(permission);
-  return !DENY.has(permission);
-}
-
 // ---- Globals ---------------------------------------------------------------------------------
 let win: BaseWindow | null = null;
 let base: WebContentsView | null = null;
@@ -106,8 +82,10 @@ let history: HistoryStore;
 let trainer: Trainer;
 let logins: Logins;
 let pageSession: Session;
+let downloads: Downloads;
+let perms: Permissions;
 const blocker = new Blocker();
-const runtime: RuntimeState = { tabs: {}, fullscreenTabId: null, overlay: null, blocking: { ready: false, rules: 0 } };
+const runtime: RuntimeState = { tabs: {}, fullscreenTabId: null, overlay: null, blocking: { ready: false, rules: 0 }, downloads: [], hud: EMPTY_HUD };
 
 // ---- State broadcast (coalesced per tick) ----------------------------------------------------
 let pendingPersist: Partial<PersistedState> = {};
@@ -186,7 +164,8 @@ function applyLayout() {
  *  (including the floating address bar itself) is open, and during page fullscreen. */
 function placeEdge(li = layoutInput()) {
   if (!win) return;
-  const r = runtime.fullscreenTabId || ovAttached ? null : edgeStripRect(li);
+  // The HUD (find bar, zoom, prompts) sits in a corner and does not block the strip.
+  const r = runtime.fullscreenTabId || (ovAttached && ovSpec?.kind !== 'hud') ? null : edgeStripRect(li);
   if (!r) {
     if (edge && edgeAttached) {
       win.contentView.removeChildView(edge);
@@ -268,7 +247,8 @@ function reconcile() {
   const primary = ws?.primaryTabId ?? null;
   if (primary !== lastPrimary) {
     lastPrimary = primary;
-    if (!ovSpec || HOVER_KINDS.includes(ovSpec.kind)) {
+    if (runtime.hud.find && runtime.hud.find.tabId !== primary) closeFind(false);
+    if (!ovSpec || HOVER_KINDS.includes(ovSpec.kind) || ovSpec.kind === 'hud') {
       const wc = primary ? tabs.webContentsOf(primary) : null;
       if (wc) wc.focus();
       else base?.webContents.focus();
@@ -287,6 +267,7 @@ function onStoreChange(changed: Partial<PersistedState>, prev: PersistedState) {
     if (a.sidebar && b.sidebar && a.left !== b.left && a.top === b.top) animateLeft(animLeft ?? a.left, b.left);
   }
   if ('maxAwakeTabs' in changed || 'sleepAfterMin' in changed || 'keepPinnedAwake' in changed) memsaver?.kick();
+  if ('workspaces' in changed) rememberClosed(prev);
   if ('workspaces' in changed || 'activeWorkspaceId' in changed) reconcile();
   else applyLayout();
 }
@@ -320,6 +301,10 @@ let ovSeq = 0;
 let ovRect: Rect | null = null;
 let ovAttached = false;
 let lastBlurClose = { kind: '', at: 0 };
+/** The overlay has drawn the current spec and been shown (overlayReady ran for it). */
+let ovShown = false;
+/** Ctrl+F: give the find box the keyboard as soon as the HUD is up. */
+let focusFindPending = false;
 
 function createOverlay() {
   if (overlay || !win) return;
@@ -342,8 +327,8 @@ function openOverlay(spec: OverlaySpec) {
   createOverlay();
   // A click on the menu button while its menu is open: the blur already closed it, don't reopen.
   if (lastBlurClose.kind === spec.kind && Date.now() - lastBlurClose.at < 300 && !HOVER_KINDS.includes(spec.kind)) return;
-  // Suggestion list updates (every keystroke) redraw in place: no hide/re-show, same seq.
-  if (spec.kind === 'suggest' && ovSpec?.kind === 'suggest' && ovAttached) {
+  // Suggestion list updates (every keystroke) and HUD updates redraw in place: no hide/re-show, same seq.
+  if ((spec.kind === 'suggest' || spec.kind === 'hud') && ovSpec?.kind === spec.kind && ovAttached) {
     ovSpec = spec;
     runtime.overlay = spec;
     runtimeChanged();
@@ -354,6 +339,7 @@ function openOverlay(spec: OverlaySpec) {
   ovSpec = spec;
   ovSeq++;
   ovRect = null;
+  ovShown = false;
   runtime.overlay = spec;
   runtimeChanged();
   const ov = overlay!;
@@ -375,7 +361,14 @@ function overlayReady(seq: number, rect: Rect | null) {
     : null;
   overlay.setBounds(ovRect ?? { x: 0, y: 0, width, height });
   overlay.setVisible(true);
-  const wantsFocus = !HOVER_KINDS.includes(ovSpec.kind) || (ovSpec.kind === 'addressbar' && ovSpec.focus);
+  ovShown = true;
+  const hud = ovSpec.kind === 'hud';
+  // The HUD never takes the keyboard on its own (a zoom badge must not steal typing from the page).
+  const wantsFocus = (!hud && !HOVER_KINDS.includes(ovSpec.kind)) || (ovSpec.kind === 'addressbar' && ovSpec.focus) || (hud && focusFindPending);
+  if (hud && focusFindPending) {
+    focusFindPending = false;
+    sendEvent({ type: 'focus-find' });
+  }
   if (wantsFocus && !overlay.webContents.isFocused()) overlay.webContents.focus();
 }
 
@@ -385,6 +378,8 @@ function closeOverlay(seq?: number) {
   const hadFocus = overlay?.webContents.isFocused();
   ovSpec = null;
   ovRect = null;
+  ovShown = false;
+  focusFindPending = false;
   runtime.overlay = null;
   runtimeChanged();
   if (overlay && win && ovAttached) {
@@ -399,6 +394,161 @@ function closeOverlay(seq?: number) {
     const wc = p ? tabs.webContentsOf(p) : null;
     (wc ?? base?.webContents)?.focus();
   }
+  // Whatever the HUD was showing (find bar, prompt...) comes back once the popup is gone.
+  setImmediate(syncHud);
+}
+
+// ---- HUD: find bar, zoom badge, permission prompt, toast -------------------------------------
+// One overlay surface (see OverlaySpec 'hud') drawn from runtime.hud, in the page area's top-right.
+function setHud(patch: Partial<HudState>) {
+  runtime.hud = { ...runtime.hud, ...patch };
+  runtimeChanged();
+  syncHud();
+}
+function hudActive(h = runtime.hud) {
+  return !!(h.find || h.zoom || h.toast || h.perm);
+}
+function hudAnchor(): Rect {
+  const li = layoutInput();
+  const { primary, secondary } = pageRects(li, animLeft);
+  const right = secondary ? secondary.x + secondary.width : primary.x + primary.width;
+  return { x: primary.x, y: primary.y, width: right - primary.x, height: primary.height };
+}
+function syncHud() {
+  if (!win || runtime.fullscreenTabId) return;
+  if (hudActive()) {
+    // Another popup (menu, address bar...) has the overlay: the HUD returns when it closes.
+    if (ovSpec && ovSpec.kind !== 'hud') return;
+    const a = hudAnchor();
+    const cur = ovSpec as Extract<OverlaySpec, { kind: 'hud' }> | null;
+    if (!cur || !ovAttached || cur.anchor.x !== a.x || cur.anchor.y !== a.y || cur.anchor.width !== a.width) openOverlay({ kind: 'hud', anchor: a });
+    else if (focusFindPending && ovShown) {
+      focusFindPending = false;
+      overlay?.webContents.focus();
+      sendEvent({ type: 'focus-find' });
+    }
+  } else if (ovSpec?.kind === 'hud') closeOverlay();
+}
+let toastSeq = 0;
+let toastTimer: NodeJS.Timeout | null = null;
+function toast(text: string, downloadId?: string) {
+  if (toastTimer) clearTimeout(toastTimer);
+  setHud({ toast: { id: ++toastSeq, text, downloadId } });
+  toastTimer = setTimeout(() => {
+    toastTimer = null;
+    setHud({ toast: null });
+  }, 5000);
+}
+
+// ---- Find in page ----------------------------------------------------------------------------
+function openFind(): boolean {
+  const id = activePageId();
+  const t = id ? activeWorkspace()?.tabs.find((x) => x.id === id) : null;
+  if (!id || !t || (t.type !== 'web' && t.type !== 'jivvy')) return false;
+  const cur = runtime.hud.find;
+  if (cur && cur.tabId !== id) closeFind(false);
+  focusFindPending = true;
+  if (!runtime.hud.find) setHud({ find: { text: '', active: 0, total: 0, tabId: id } });
+  else syncHud();
+  return true;
+}
+function closeFind(refocus = true) {
+  const f = runtime.hud.find;
+  if (!f) return;
+  tabs.webContentsOf(f.tabId)?.stopFindInPage('clearSelection');
+  focusFindPending = false;
+  setHud({ find: null });
+  if (refocus) {
+    const wc = tabs.webContentsOf(f.tabId);
+    if (wc && !ovSpec) wc.focus();
+  }
+}
+/** Search for `text` in the page the find bar belongs to; `next` steps to the following match. */
+function findText(text: string, opts: { forward?: boolean; next?: boolean } = {}) {
+  const f = runtime.hud.find;
+  const wc = f ? tabs.webContentsOf(f.tabId) : null;
+  if (!f || !wc) return;
+  if (!text) {
+    wc.stopFindInPage('clearSelection');
+    setHud({ find: { ...f, text: '', active: 0, total: 0 } });
+    return;
+  }
+  setHud({ find: { ...f, text } });
+  wc.findInPage(text, { forward: opts.forward !== false, findNext: !!opts.next, matchCase: false });
+}
+function foundInPage(tabId: string, r: Electron.Result) {
+  const f = runtime.hud.find;
+  if (!f || f.tabId !== tabId) return;
+  // Results arrive as the search runs; only the numbers that came with matches are worth showing.
+  const total = r.matches ?? f.total;
+  const active = r.activeMatchOrdinal ?? f.active;
+  if (total === f.total && active === f.active) return;
+  setHud({ find: { ...f, total, active: total === 0 ? 0 : active } });
+}
+
+// ---- Zoom (per site, saved by host) ----------------------------------------------------------
+function hostKey(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+let zoomSeq = 0;
+let zoomTimer: NodeJS.Timeout | null = null;
+function showZoom(percent: number, host: string) {
+  if (zoomTimer) clearTimeout(zoomTimer);
+  setHud({ zoom: { percent, host, seq: ++zoomSeq } });
+  zoomTimer = setTimeout(() => {
+    zoomTimer = null;
+    setHud({ zoom: null });
+  }, 1800);
+}
+function setZoom(tabId: string, percent: number | 'step-in' | 'step-out' | 'reset') {
+  const wc = tabs.webContentsOf(tabId);
+  const host = wc ? hostKey(wc.getURL()) : '';
+  if (!wc || !host) return;
+  const cur = percentFor(wc.getZoomLevel());
+  const next = percent === 'reset' ? 100 : percent === 'step-in' ? stepZoom(cur, 1) : percent === 'step-out' ? stepZoom(cur, -1) : percent;
+  wc.setZoomLevel(levelFor(next));
+  store.dispatch({ type: 'setSiteZoom', host, percent: next });
+  showZoom(next, host);
+}
+/** A page finished navigating: put it at its site's saved zoom (100% when none). */
+function applyZoom(wc: WebContents) {
+  const host = hostKey(wc.getURL());
+  const want = levelFor(store.state.siteZoom[host] ?? 100);
+  if (host && Math.abs(wc.getZoomLevel() - want) > 1e-6) wc.setZoomLevel(want);
+}
+
+// ---- Closed tabs (Ctrl+Shift+T) --------------------------------------------------------------
+interface ClosedTab {
+  type: 'web' | 'jivvy';
+  title: string;
+  pinned: boolean;
+  rec: NonNullable<ReturnType<TabManager['snapshot']>>;
+}
+const closedStack: ClosedTab[] = [];
+const MAX_CLOSED = 20;
+/** Tabs that just left the state: remember their page + back/forward list (before their view is destroyed). */
+function rememberClosed(prev: PersistedState) {
+  const now = new Set(store.state.workspaces.flatMap((w) => w.tabs.map((t) => t.id)));
+  for (const w of prev.workspaces)
+    for (const t of w.tabs) {
+      if (now.has(t.id) || (t.type !== 'web' && t.type !== 'jivvy') || !t.url) continue;
+      const rec = tabs.snapshot(t.id, t.url, t.title);
+      if (!rec) continue;
+      closedStack.push({ type: t.type, title: t.title, pinned: !!t.pinned, rec });
+      if (closedStack.length > MAX_CLOSED) closedStack.shift();
+    }
+}
+function reopenClosedTab(): boolean {
+  const c = closedStack.pop();
+  if (!c) return false;
+  const id = `tab_${crypto.randomUUID().slice(0, 8)}`;
+  tabs.stash(id, c.rec);
+  store.dispatch({ type: 'openTab', tab: { id, title: c.title, type: c.type, url: c.rec.url, ...(c.pinned ? { pinned: true } : {}) } });
+  return true;
 }
 
 // ---- Keyboard shortcuts ----------------------------------------------------------------------
@@ -406,66 +556,166 @@ function activePageId(): string | null {
   const p = activeWorkspace()?.primaryTabId;
   return p && tabs.live.has(p) ? p : null;
 }
+/** Tab shortcuts are skipped while a full-window modal has the screen. */
+const MODAL_KINDS: OverlaySpec['kind'][] = ['confirm', 'omnibox', 'settings', 'import'];
+function focusAddress() {
+  base?.webContents.focus();
+  sendEvent({ type: 'focus-address' });
+}
+/** Switch to the n-th tab (1-based) or by `delta` from the current one, wrapping around. */
+function switchTab(pick: { nth: number } | { delta: number }) {
+  const ws = activeWorkspace();
+  if (!ws || !ws.tabs.length) return;
+  const n = ws.tabs.length;
+  let i: number;
+  if ('nth' in pick) i = pick.nth >= 9 ? n - 1 : Math.min(n - 1, pick.nth - 1);
+  else i = (Math.max(0, ws.tabs.findIndex((t) => t.id === ws.primaryTabId)) + pick.delta + n) % n;
+  store.dispatch({ type: 'focusTab', tabId: ws.tabs[i].id });
+}
+
+/**
+ * Browser shortcuts, from any view (pages, base, overlay), so they work whatever has focus.
+ * Handled keys are swallowed (preventDefault) so a page or the UI never sees them twice.
+ * Ctrl+C/V/X/A/Z and everything not listed go through to whoever has focus.
+ */
 function handleKeys(e: Electron.Event, input: Input, tabId: string | null, source: 'page' | 'base' | 'overlay') {
   if (input.type !== 'keyDown') return;
   const k = input.key.toLowerCase();
-  if (k === 'escape' && runtime.fullscreenTabId) {
-    e.preventDefault();
-    exitPageFullscreen();
+  if (k === 'escape') {
+    if (runtime.fullscreenTabId) {
+      e.preventDefault();
+      exitPageFullscreen();
+    } else if (runtime.hud.find && (!ovSpec || ovSpec.kind === 'hud')) closeFind();
     return;
   }
-  const mod = input.control || input.meta;
+  if (k === 'f11') {
+    e.preventDefault();
+    if (win && !runtime.fullscreenTabId) win.setFullScreen(!win.isFullScreen());
+    return;
+  }
+  if (ovSpec && MODAL_KINDS.includes(ovSpec.kind)) return;
+  const mod = (input.control || input.meta) && !input.alt;
+  const alt = input.alt && !input.control && !input.meta;
+  const shift = input.shift;
   const page = tabId ?? activePageId();
   const wc = page ? tabs.webContentsOf(page) : null;
-  if (source === 'page') {
-    if (mod && !input.shift && (k === 'k' || k === 't')) {
-      e.preventDefault();
+  const swallow = () => e.preventDefault();
+
+  if (mod) {
+    if (!shift && (k === 'k' || k === 't')) {
+      swallow();
       openOverlay({ kind: 'omnibox' });
-      return;
-    }
-    if (mod && k === 'l') {
-      e.preventDefault();
-      base?.webContents.focus();
-      sendEvent({ type: 'focus-address' });
-      return;
-    }
-    if (input.alt && (k === 'arrowleft' || k === 'arrowright') && page) {
-      e.preventDefault();
-      tabs.nav(page, k === 'arrowleft' ? 'back' : 'forward');
-      return;
-    }
-    if (mod && wc && (k === '=' || k === '+' || k === '-' || k === '0')) {
-      e.preventDefault();
-      wc.setZoomLevel(k === '0' ? 0 : wc.getZoomLevel() + (k === '-' ? -0.5 : 0.5));
-      return;
-    }
-    if (mod && input.shift && k === 'i' && wc) {
-      e.preventDefault();
+    } else if (shift && k === 't') {
+      swallow();
+      reopenClosedTab();
+    } else if (!shift && k === 'w') {
+      swallow();
+      const ws = activeWorkspace();
+      const t = ws?.tabs.find((x) => x.id === ws.primaryTabId);
+      if (t && t.type !== 'dashboard') store.dispatch({ type: 'closeTab', tabId: t.id });
+    } else if (k === 'tab' || k === 'pagedown' || k === 'pageup') {
+      swallow();
+      switchTab({ delta: (k === 'pageup' || (k === 'tab' && shift)) ? -1 : 1 });
+    } else if (!shift && /^[1-9]$/.test(k)) {
+      swallow();
+      switchTab({ nth: Number(k) });
+    } else if (!shift && k === 'l') {
+      swallow();
+      focusAddress();
+    } else if (k === 'r') {
+      swallow(); // never reload the UI views
+      if (page) {
+        if (shift && wc) wc.reloadIgnoringCache();
+        else tabs.nav(page, 'reload');
+      }
+    } else if (!shift && k === 'd') {
+      swallow();
+      const ws = activeWorkspace();
+      const t = ws?.tabs.find((x) => x.id === ws.primaryTabId);
+      if (t && t.type !== 'dashboard') store.dispatch({ type: 'togglePin', tabId: t.id });
+    } else if (!shift && k === 'f') {
+      if (openFind()) swallow();
+    } else if (!shift && k === 'j') {
+      swallow();
+      openOverlay({ kind: 'downloads', anchor: downloadsAnchor() });
+    } else if (page && wc && (k === '=' || k === '+' || k === '-' || k === '_' || k === '0') && hostKey(wc.getURL())) {
+      swallow();
+      setZoom(page, k === '0' ? 'reset' : k === '-' || k === '_' ? 'step-out' : 'step-in');
+    } else if (shift && k === 'i' && source !== 'page' && (DEV_URL || process.env.JIVVY_DEVTOOLS === '1')) {
+      swallow();
+      (source === 'overlay' ? overlay : base)?.webContents.openDevTools({ mode: 'detach' });
+    } else if (shift && k === 'i' && wc) {
+      swallow();
       wc.openDevTools({ mode: 'detach' });
-      return;
     }
+    return;
   }
-  if ((mod && k === 'r') || k === 'f5') {
-    e.preventDefault(); // never reload the UI views
+  if (alt && page) {
+    if (k === 'arrowleft' || k === 'arrowright') {
+      swallow();
+      tabs.nav(page, k === 'arrowleft' ? 'back' : 'forward');
+    } else if (k === 'd') {
+      swallow();
+      focusAddress();
+    }
+    return;
+  }
+  if (k === 'f5') {
+    swallow();
     if (page) tabs.nav(page, 'reload');
-    return;
   }
-  if (mod && k === 'w') {
-    e.preventDefault();
-    const ws = activeWorkspace();
-    const t = ws?.tabs.find((x) => x.id === ws.primaryTabId);
-    if (t && t.type !== 'dashboard') store.dispatch({ type: 'closeTab', tabId: t.id });
-    return;
-  }
-  if (mod && input.shift && k === 'i' && source !== 'page' && (DEV_URL || process.env.JIVVY_DEVTOOLS === '1')) {
-    e.preventDefault();
-    (source === 'overlay' ? overlay : base)?.webContents.openDevTools({ mode: 'detach' });
-  }
+}
+
+/** Where the downloads panel sits: right-aligned under the address bar position. */
+function downloadsAnchor(): Rect {
+  const li = layoutInput();
+  const r = addressBarRect(li);
+  return { x: li.width - 8, y: r.y + r.height, width: 0, height: 0 };
 }
 
 function sendEvent(ev: UiEvent, except?: WebContents) {
   for (const wc of uiContents()) if (wc !== except) wc.send(CH.event, ev);
 }
+
+// ---- Page context menu ------------------------------------------------------------------------
+/** Google / Claude URLs through the same router and bangs the address bar uses. */
+function routeUrl(route: 'search' | 'claude', text: string): string {
+  const t = text.replace(/\s+/g, ' ').trim().slice(0, 500);
+  return decide(`${route === 'search' ? '!s' : '!ask'} ${t}`)?.url ?? `https://www.google.com/search?q=${encodeURIComponent(t)}`;
+}
+/** View page source: a small separate window (tabs only load http(s)), same session so cookies/cache apply. */
+function viewSource(wc: WebContents) {
+  const url = wc.getURL();
+  if (!/^https?:/i.test(url)) return;
+  const w = new BrowserWindow({
+    width: 900,
+    height: 700,
+    parent: win ?? undefined,
+    autoHideMenuBar: true,
+    title: `Source: ${hostKey(url)}`,
+    backgroundColor: '#ffffff',
+    webPreferences: { session: pageSession, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true },
+  });
+  w.setMenu(null);
+  w.webContents.on('will-navigate', (ev) => ev.preventDefault());
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  w.loadURL(`view-source:${url}`).catch((err) => log('view-source failed', String(err).slice(0, 120)));
+}
+const menuDeps: MenuDeps = {
+  openTab: (url, opts) => {
+    if (!isAllowedTabUrl(url)) return;
+    let title = url;
+    try {
+      title = new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      /* keep url */
+    }
+    store.dispatch({ type: 'openTab', tab: { id: `tab_${crypto.randomUUID().slice(0, 8)}`, title, type: 'web', url }, ...(opts.pane ? { targetPane: opts.pane } : {}), background: opts.background });
+  },
+  routeUrl,
+  saveImage: (wc, url) => void downloads.saveAs(wc, url),
+  viewSource,
+};
 
 // ---- Page hardening: navigation, new windows, popups ---------------------------------------
 /** OAuth/SSO popups (window.open with a size) keep `window.opener`; everything else is a tab. */
@@ -578,6 +828,10 @@ function validSpec(s: unknown): OverlaySpec | null {
       return isRect(o.anchor) && (o.position === 'top' || o.position === 'bottom') ? { kind: 'zenbar', position: o.position, anchor: o.anchor } : null;
     case 'addressbar':
       return isRect(o.anchor) ? { kind: 'addressbar', anchor: o.anchor, focus: o.focus === true } : null;
+    case 'downloads':
+      return isRect(o.anchor) ? { kind: 'downloads', anchor: o.anchor } : null;
+    case 'hud':
+      return isRect(o.anchor) ? { kind: 'hud', anchor: o.anchor } : null;
     case 'suggest': {
       if (!isRect(o.anchor) || !Array.isArray(o.items) || o.items.length > 8 || !Number.isInteger(o.selected)) return null;
       const items: SuggestItem[] = [];
@@ -626,6 +880,39 @@ async function command(cmd: string, args: Record<string, unknown>): Promise<unkn
       return memsaver.freeMemory(args.targetMB);
     case 'install_kind':
       return 'electron';
+    case 'find':
+      if (!shortStr(args.text, 500)) throw new Error('Bad text');
+      findText(args.text, { forward: args.forward !== false, next: args.next === true });
+      return null;
+    case 'find_close':
+      closeFind();
+      return null;
+    case 'zoom_reset': {
+      const id = activePageId();
+      if (id) setZoom(id, 'reset');
+      return null;
+    }
+    case 'download_cancel':
+      if (!shortStr(args.id, 32)) throw new Error('Bad id');
+      downloads.cancel(args.id);
+      return null;
+    case 'download_open':
+      if (!shortStr(args.id, 32)) throw new Error('Bad id');
+      return downloads.open(args.id);
+    case 'download_show':
+      if (!shortStr(args.id, 32)) throw new Error('Bad id');
+      return downloads.show(args.id);
+    case 'downloads_clear':
+      downloads.clear();
+      return null;
+    case 'permission_answer':
+      if (!Number.isInteger(args.id) || typeof args.allow !== 'boolean' || typeof args.remember !== 'boolean') throw new Error('Bad answer');
+      return perms.answer(args.id as number, args.allow, args.remember);
+    case 'toast_dismiss':
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = null;
+      setHud({ toast: null });
+      return null;
     case 'set_blocking':
       return null; // Electron reads blocking settings from its own state
     case 'read_brief':
@@ -724,7 +1011,7 @@ function registerIpc() {
     if (!isFromUi(e) || !ev || typeof ev !== 'object') return;
     if (ev.type === 'edit-folder' && shortStr(ev.id, 128)) sendEvent({ type: 'edit-folder', id: ev.id }, e.sender);
     else if (ev.type === 'edge-hover') {
-      if (e.sender === edge?.webContents && !ovAttached) openFloatingAddressBar(false);
+      if (e.sender === edge?.webContents && (!ovAttached || ovSpec?.kind === 'hud')) openFloatingAddressBar(false);
     } else if (ev.type === 'focus-address') sendEvent({ type: 'focus-address' }, e.sender);
     else if (ev.type === 'suggest-pick' && Number.isInteger(ev.index) && ev.index >= 0 && ev.index < 8) sendEvent({ type: 'suggest-pick', index: ev.index }, e.sender);
   });
@@ -772,18 +1059,12 @@ function setupUiSession() {
 function setupPageSession() {
   pageSession = session.fromPartition('persist:jivvy');
   pageSession.setUserAgent(cleanUserAgent(pageSession.getUserAgent()));
-  pageSession.setPermissionRequestHandler((wc, permission, cb, details) => {
-    const origin = (() => {
-      try {
-        return new URL(details.requestingUrl || wc.getURL()).origin;
-      } catch {
-        return '';
-      }
-    })();
-    cb(pagePermission(permission, origin));
-  });
-  pageSession.setPermissionCheckHandler((_wc, permission, origin) => pagePermission(permission, origin));
-  pageSession.setDevicePermissionHandler(() => false);
+  perms.attach(pageSession); // request + check handlers, devices denied
+  downloads.attach(pageSession);
+  // Spellcheck (red squiggles + suggestions in the context menu). On Linux Chromium fetches the
+  // en-US dictionary the first time it is needed.
+  pageSession.setSpellCheckerLanguages(['en-US']);
+  pageSession.setSpellCheckerEnabled(true);
   blocker.configure(store.state.blockingEnabled, store.state.blockingDisabledSites);
   blocker.attach(pageSession);
   blocker.onReady = () => {
@@ -885,6 +1166,16 @@ if (!app.requestSingleInstanceLock()) {
     if (!SELFTEST && !SNAPSHOT) trainer.start();
     logins = new Logins({ userData: app.getPath('userData'), session: () => pageSession, webContentsOf: (id) => tabs.webContentsOf(id) });
     setupUiSession();
+    downloads = new Downloads(
+      runtime,
+      { runtimeChanged, toast, window: () => win },
+      process.env.JIVVY_DOWNLOAD_DIR || (SELFTEST || SNAPSHOT ? path.join(app.getPath('userData'), 'downloads') : app.getPath('downloads'))
+    );
+    perms = new Permissions({
+      state: () => store.state,
+      remember: (origin, kind, value) => store.dispatch({ type: 'setSitePermission', origin, permission: kind, value }),
+      show: (prompt) => setHud({ perm: prompt }),
+    });
     setupPageSession();
     tabs = new TabManager(
       {
@@ -899,6 +1190,10 @@ if (!app.requestSingleInstanceLock()) {
         handleKeys: (e, input, tabId) => handleKeys(e, input, tabId, 'page'),
         guardPage,
         state: () => store.state,
+        contextMenu: (_id, wc, params) => buildPageMenu(menuDeps, wc, params).popup({ window: win ?? undefined }),
+        foundInPage,
+        zoomChanged: (id, dir) => setZoom(id, dir === 'in' ? 'step-in' : 'step-out'),
+        applyZoom,
       },
       runtime
     );
@@ -934,6 +1229,9 @@ if (!app.requestSingleInstanceLock()) {
         blocker,
         history,
         trainer,
+        downloads,
+        perms,
+        menuDeps,
         layoutInput,
         snapshotOnly: SNAPSHOT && !SELFTEST,
       });
@@ -942,6 +1240,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     store?.flushSync();
     memsaver?.stop();
+    perms?.stop();
     trainer?.stop();
     history?.close();
   });

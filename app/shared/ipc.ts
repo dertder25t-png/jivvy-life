@@ -40,7 +40,15 @@ export type OverlaySpec =
   | { kind: 'zenbar'; position: 'top' | 'bottom'; anchor: Rect }
   | { kind: 'addressbar'; anchor: Rect; focus?: boolean }
   /** Address-bar suggestion dropdown for the base view's bar; never takes focus. Clicks come back as a `suggest-pick` event. */
-  | { kind: 'suggest'; anchor: Rect; items: SuggestItem[]; selected: number };
+  | { kind: 'suggest'; anchor: Rect; items: SuggestItem[]; selected: number }
+  /** Downloads list, a popup under the downloads button (`anchor.x` is the panel's right edge, `anchor.y` its top). */
+  | { kind: 'downloads'; anchor: Rect }
+  /**
+   * The always-on-top-of-the-page strip in the page area's top-right corner: find bar, zoom
+   * indicator, permission prompt and toast, all drawn from `RuntimeState.hud`. Opened and closed
+   * by main alone; any other overlay temporarily replaces it. `anchor` is the page area.
+   */
+  | { kind: 'hud'; anchor: Rect };
 
 export interface SuggestItem {
   url: string;
@@ -52,13 +60,51 @@ export type OverlayKind = OverlaySpec['kind'];
 /** Hover surfaces never take focus and close when the pointer leaves them. */
 export const HOVER_KINDS: OverlayKind[] = ['rail', 'zenbar', 'addressbar', 'suggest'];
 /** Popups close when the overlay loses focus (click anywhere else), like native menus. */
-export const BLUR_KINDS: OverlayKind[] = ['menu', 'tabmenu', 'rail', 'zenbar', 'addressbar'];
+export const BLUR_KINDS: OverlayKind[] = ['menu', 'tabmenu', 'rail', 'zenbar', 'addressbar', 'downloads'];
+
+export type DownloadState = 'progressing' | 'done' | 'failed' | 'cancelled';
+
+export interface DownloadInfo {
+  id: string;
+  name: string;
+  /** Where it came from (host only; the full URL may carry secrets). */
+  host: string;
+  received: number;
+  /** 0 = unknown. */
+  total: number;
+  /** Bytes per second, smoothed. */
+  speed: number;
+  state: DownloadState;
+  startedAt: number;
+}
+
+export interface PermPrompt {
+  id: number;
+  origin: string;
+  host: string;
+  /** "wants to use your camera", ready to follow the host. */
+  text: string;
+  /** Seconds until it is denied on its own. */
+  expiresAt: number;
+}
+
+export interface HudState {
+  find: { text: string; active: number; total: number; tabId: string } | null;
+  zoom: { percent: number; host: string; seq: number } | null;
+  toast: { id: number; text: string; downloadId?: string } | null;
+  perm: PermPrompt | null;
+}
+
+export const EMPTY_HUD: HudState = { find: null, zoom: null, toast: null, perm: null };
 
 export interface RuntimeState {
   tabs: Record<string, TabRuntime>;
   fullscreenTabId: string | null;
   overlay: OverlaySpec | null;
   blocking: { ready: boolean; rules: number };
+  /** Newest first, at most 50. */
+  downloads: DownloadInfo[];
+  hud: HudState;
 }
 
 export interface StatePatch {
@@ -71,7 +117,13 @@ export interface InitPayload {
   runtime: RuntimeState;
 }
 
-export type UiEvent = { type: 'edit-folder'; id: string } | { type: 'focus-address' } | { type: 'edge-hover' } | { type: 'suggest-pick'; index: number };
+export type UiEvent =
+  | { type: 'edit-folder'; id: string }
+  | { type: 'focus-address' }
+  | { type: 'edge-hover' }
+  | { type: 'suggest-pick'; index: number }
+  /** Main -> overlay: Ctrl+F again, put the caret back in the find box. */
+  | { type: 'focus-find' };
 
 export interface OverlayMessage {
   spec: OverlaySpec | null;

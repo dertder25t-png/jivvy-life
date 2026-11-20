@@ -10,8 +10,8 @@ import {
 import { storageService } from '../services/storageService';
 import { telemetryService } from '../services/telemetryService';
 import { normalizeHost, pushBlocking, MAX_BLOCK_SITES } from '../services/blocking';
-import { reduce, hydrate, type Action, type PersistedState, type Prefs } from '../../shared/state';
-import type { InitPayload, RuntimeState, StatePatch } from '../../shared/ipc';
+import { reduce, hydrate, type Action, type PersistedState, type Prefs, type PromptPermission } from '../../shared/state';
+import { EMPTY_HUD, type InitPayload, type RuntimeState, type StatePatch } from '../../shared/ipc';
 import { jivvy, isElectron, isOverlayRole, openOverlay, closeOverlay } from '../platform';
 
 export type ZenBarPosition = 'left' | 'top' | 'bottom';
@@ -67,6 +67,7 @@ interface WorkspaceState extends PersistedState {
   setShowFolders: (v: boolean) => void;
   setZenBarPosition: (v: ZenBarPosition) => void;
   clearAllTabs: () => void;
+  removeSitePermission: (origin: string, permission?: PromptPermission) => void;
   navigateTab: (tabId: string, url: string, title?: string) => void;
   syncTabFromPage: (tabId: string, url: string, title?: string) => void;
   createFolder: (name: string) => string;
@@ -89,7 +90,7 @@ interface WorkspaceState extends PersistedState {
   setSettingsModalOpen: (open: boolean) => void;
 }
 
-const EMPTY_RUNTIME: RuntimeState = { tabs: {}, fullscreenTabId: null, overlay: null, blocking: { ready: false, rules: 0 } };
+const EMPTY_RUNTIME: RuntimeState = { tabs: {}, fullscreenTabId: null, overlay: null, blocking: { ready: false, rules: 0 }, downloads: [], hud: EMPTY_HUD };
 
 // Electron gets its real state from main before the first render (see main.tsx).
 const initial: PersistedState = isElectron
@@ -149,6 +150,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     setMemoryGuard: pref('memoryGuard'),
     setKeepPinnedAwake: pref('keepPinnedAwake'),
     setClearTabsOnStart: pref('clearTabsOnStart'),
+    removeSitePermission: (origin, permission) => act({ type: 'removeSitePermission', origin, ...(permission ? { permission } : {}) }),
     setShowFolders: pref('showFolders'),
     setZenBarPosition: pref('zenBarPosition'),
 
