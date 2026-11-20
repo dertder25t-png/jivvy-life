@@ -15,6 +15,7 @@ import { lagOp, startLagMon } from './lagmon';
 import { MemorySaver, readProcMeminfo } from './memsaver';
 import { runSelfTest } from './selftest';
 import { Logins } from './logins';
+import { autoMigrate, defaultTauriDir, dryRun, fileStateIO, runMigration, summaryText, takeMigratedDash, type MigrationReport } from './migrate-tauri';
 import { Downloads } from './downloads';
 import { Permissions } from './permissions';
 import { buildPageMenu, type MenuDeps } from './contextmenu';
@@ -81,6 +82,8 @@ let memsaver: MemorySaver;
 let history: HistoryStore;
 let trainer: Trainer;
 let logins: Logins;
+let startupMigration: MigrationReport | null = null;
+let migrating = false;
 let pageSession: Session;
 let downloads: Downloads;
 let perms: Permissions;
@@ -936,6 +939,27 @@ async function command(cmd: string, args: Record<string, unknown>): Promise<unkn
       return logins.importPasswordsCsv(args.csv);
     case 'forget_all_logins':
       return logins.forgetAll();
+    case 'migrate_tauri': {
+      // Settings button: re-run the import; merging again never duplicates or overwrites.
+      const oldDir = defaultTauriDir();
+      if (!fs.existsSync(oldDir)) throw new Error('No data from the old Jivvy (WebKit) version found on this machine.');
+      if (migrating) throw new Error('Import already running');
+      migrating = true;
+      try {
+        const ud = app.getPath('userData');
+        return await runMigration({
+          userData: ud,
+          oldDir,
+          session: () => pageSession,
+          logins,
+          state: { get: () => store.state, apply: (next) => void store.dispatch({ type: 'applyMigration', patch: next }) },
+        });
+      } finally {
+        migrating = false;
+      }
+    }
+    case 'take_migrated_dash':
+      return takeMigratedDash(app.getPath('userData'));
     default:
       throw new Error(`Unknown command ${cmd.slice(0, 40)}`);
   }
@@ -1147,11 +1171,32 @@ if (!app.requestSingleInstanceLock()) {
   app.on('web-contents-created', (_e, wc) => {
     wc.on('will-attach-webview', (ev) => ev.preventDefault());
   });
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    if (process.env.JIVVY_MIGRATE_DRYRUN === '1') {
+      // Parse the old Tauri data and print counts only (no values, no URLs); changes nothing anywhere.
+      try {
+        console.log('MIGRATE-DRYRUN', JSON.stringify(await dryRun(defaultTauriDir())));
+      } catch (e) {
+        console.log('MIGRATE-DRYRUN failed:', String((e as Error).message).slice(0, 120));
+      }
+      app.exit(0);
+      return;
+    }
     log('electron', process.versions.electron, 'chrome', process.versions.chrome, 'userData', app.getPath('userData'));
     app.userAgentFallback = cleanUserAgent(app.userAgentFallback);
     Menu.setApplicationMenu(null);
     if (process.env.JIVVY_LAGMON === '1') startLagMon();
+    // One-time move from the old Tauri build: before the state loads (it rewrites the state file).
+    if (!SELFTEST && !SNAPSHOT) {
+      const ud = app.getPath('userData');
+      startupMigration = await autoMigrate({
+        userData: ud,
+        oldDir: defaultTauriDir(),
+        session: () => session.fromPartition('persist:jivvy'),
+        logins: new Logins({ userData: ud, session: () => session.fromPartition('persist:jivvy'), webContentsOf: () => null }),
+        state: fileStateIO(ud),
+      });
+    }
     store = new StateStore(app.getPath('userData'));
     store.onChange(onStoreChange);
     history = new HistoryStore(app.getPath('userData'), () => store.state.saveHistory);
@@ -1213,6 +1258,10 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc();
     logGpuOnce();
     createWindow();
+    if (startupMigration) {
+      const text = summaryText(startupMigration);
+      setTimeout(() => toast(text), 2500); // once: the marker stops it from running again
+    }
     if (SELFTEST || SNAPSHOT) {
       void runSelfTest({
         app,

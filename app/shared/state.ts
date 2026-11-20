@@ -265,10 +265,12 @@ export type Action =
   | { type: 'setSiteZoom'; host: string; percent: number }
   | { type: 'setSitePermission'; origin: string; permission: PromptPermission; value: PermDecision }
   /** Settings -> Site permissions: forget one answer, or every answer for the origin. */
-  | { type: 'removeSitePermission'; origin: string; permission?: PromptPermission };
+  | { type: 'removeSitePermission'; origin: string; permission?: PromptPermission }
+  /** Main only: the Tauri-build migration hands over an already merged and validated slice of state. */
+  | { type: 'applyMigration'; patch: Partial<PersistedState> };
 
 /** Actions only the main process may issue (page events), never accepted over IPC. */
-export const INTERNAL_ACTIONS = new Set<Action['type']>(['syncTabFromPage', 'setSiteZoom', 'setSitePermission']);
+export const INTERNAL_ACTIONS = new Set<Action['type']>(['syncTabFromPage', 'setSiteZoom', 'setSitePermission', 'applyMigration']);
 
 function mapActive(s: PersistedState, fn: (ws: WorkspaceManifest) => WorkspaceManifest): PersistedState {
   return { ...s, workspaces: s.workspaces.map((ws) => (ws.id === s.activeWorkspaceId ? fn(ws) : ws)) };
@@ -471,6 +473,11 @@ export function reduce(s: PersistedState, a: Action): PersistedState {
       const { [a.permission]: _p, ...left } = cur;
       return { ...s, sitePermissions: Object.keys(left).length ? { ...others, [a.origin]: left } : others };
     }
+    case 'applyMigration': {
+      const next = { ...s, ...a.patch };
+      if (!next.workspaces.some((w) => w.id === next.activeWorkspaceId)) next.activeWorkspaceId = next.workspaces[0]?.id ?? s.activeWorkspaceId;
+      return next;
+    }
     case 'applyPulled': {
       const workspaces = a.workspaces ? a.workspaces.map(withDashboard) : s.workspaces;
       return {
@@ -495,6 +502,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 const str = (v: unknown, max = MAX_STR): v is string => typeof v === 'string' && v.length <= max;
 const optStr = (v: unknown, max = MAX_STR) => v === undefined || str(v, max);
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_\-:.]{1,128}$/.test(v);
+export const isValidId = id;
 const TAB_TYPES: TabType[] = ['web', 'note', 'jivvy', 'dashboard'];
 const MODES: LayoutMode[] = ['left-vertical', 'compact-rail', 'classic-top', 'zen'];
 
@@ -510,14 +518,14 @@ export function isAllowedTabUrl(u: unknown): boolean {
   }
 }
 
-function validNote(n: unknown): n is NoteDocument {
+export function validNote(n: unknown): n is NoteDocument {
   return (
     isObj(n) && id(n.id) && str(n.title) && str(n.content, MAX_NOTE) && Array.isArray(n.tags) && n.tags.every((t) => str(t, 256)) &&
     Array.isArray(n.wikilinks) && n.wikilinks.every((t) => str(t, 512)) && str(n.updatedAt, 64) && optStr(n.contextId, 128)
   );
 }
 
-function validTab(t: unknown): t is WorkspaceTab {
+export function validTab(t: unknown): t is WorkspaceTab {
   if (!isObj(t) || !id(t.id) || !str(t.title) || !TAB_TYPES.includes(t.type as TabType)) return false;
   if (t.url !== undefined && !str(t.url, MAX_URL)) return false;
   if ((t.type === 'web' || t.type === 'jivvy') && t.url !== undefined && !isAllowedTabUrl(t.url)) return false;
@@ -525,7 +533,7 @@ function validTab(t: unknown): t is WorkspaceTab {
     optStr(t.favicon, MAX_URL) && (t.folderId === undefined || id(t.folderId));
 }
 
-function validWorkspace(w: unknown): w is WorkspaceManifest {
+export function validWorkspace(w: unknown): w is WorkspaceManifest {
   return (
     isObj(w) && id(w.id) && str(w.name) && Array.isArray(w.tabs) && w.tabs.length <= 5000 &&
     w.tabs.every((t) => validTab({ ...(t as object), lastActiveAt: undefined })) &&

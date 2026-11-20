@@ -26,8 +26,7 @@ export interface FirefoxCookieResult {
   imported: number;
   skipped: number;
   profile: string;
-  /** Skip reasons with counts and a few cookie names (never values). */
-  reasons: Array<{ reason: string; count: number; names: string[] }>;
+  reasons: MozImportResult['reasons'];
 }
 
 const MAX_CSV = 20 * 1024 * 1024;
@@ -85,6 +84,153 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
+/**
+ * Read every row of a Mozilla-schema `moz_cookies` table (Firefox cookies.sqlite, or the libsoup
+ * jar WebKitGTK keeps, which has the same schema minus originAttributes). Firefox/WebKit keep live
+ * data in the -wal file, so db + wal (+shm) are copied into a private temp dir and the copy is
+ * opened; the original is never opened. The copies are not atomic, so retry if the snapshot came
+ * out inconsistent. Temp copy is always deleted.
+ */
+export async function readMozCookieRows(dbPath: string, what = 'cookie'): Promise<Array<Record<string, unknown>>> {
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jivvy-ffcookies-'));
+    try {
+      for (const suffix of ['', '-wal', '-shm']) {
+        const src = dbPath + suffix;
+        if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, `cookies.sqlite${suffix}`));
+      }
+      const db = new DatabaseSync(path.join(tmp, 'cookies.sqlite'));
+      try {
+        const cols = new Set((db.prepare('PRAGMA table_info(moz_cookies)').all() as Array<{ name: string }>).map((c) => c.name));
+        const pick = (c: string, fallback: string) => (cols.has(c) ? c : `${fallback} AS ${c}`);
+        return db
+          .prepare(`SELECT name, value, host, path, expiry, ${pick('isSecure', '0')}, ${pick('isHttpOnly', '0')}, ${pick('sameSite', '0')}, ${pick('originAttributes', "''")} FROM moz_cookies`)
+          .all() as Array<Record<string, unknown>>;
+      } finally {
+        db.close();
+      }
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 150));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+  throw new Error(`Could not read ${what} cookies: ${(lastErr as Error)?.message ?? 'unknown error'}`);
+}
+
+interface RawCookie { name: string; value: string; host: string; path: string; expiry: number; secure: boolean; httpOnly: boolean; sameSite: number; plain: boolean }
+type Skips = Map<string, { count: number; names: string[] }>;
+const addSkip = (skips: Skips, reason: string, name: string) => {
+  const e = skips.get(reason) ?? { count: 0, names: [] };
+  e.count++;
+  if (e.names.length < 5 && !e.names.includes(name)) e.names.push(name);
+  skips.set(reason, e);
+};
+const skipList = (skips: Skips) => [...skips].map(([reason, v]) => ({ reason, count: v.count, names: v.names })).sort((a, b) => b.count - a.count);
+
+/** Drop expired/empty rows and normalise expiry (ms or s, none = 30 day session). Pure; never logs values. */
+export function classifyMozCookieRows(rows: Array<Record<string, unknown>>): { raws: RawCookie[]; skips: Skips } {
+  const raws: RawCookie[] = [];
+  const skips: Skips = new Map();
+  const now = Math.floor(Date.now() / 1000);
+  for (const r of rows) {
+    let expiry = Number(r.expiry);
+    if (expiry > 100_000_000_000) expiry = Math.floor(expiry / 1000); // newer Firefox: ms
+    const name = String(r.name ?? '');
+    const host = String(r.host ?? '');
+    if (!name || !host) {
+      addSkip(skips, 'empty name or host', name);
+      continue;
+    }
+    if (expiry > 0 && expiry <= now) {
+      addSkip(skips, 'expired', name);
+      continue;
+    }
+    raws.push({
+      name,
+      value: String(r.value ?? ''),
+      host,
+      path: String(r.path || '/'),
+      expiry: expiry > 0 ? Math.min(expiry, now + 400 * 86400) : now + 30 * 86400,
+      secure: Number(r.isSecure) !== 0,
+      httpOnly: Number(r.isHttpOnly) !== 0,
+      sameSite: Number(r.sameSite ?? 0),
+      plain: !String(r.originAttributes ?? ''),
+    });
+  }
+  return { raws, skips };
+}
+
+export interface MozImportResult {
+  imported: number;
+  skipped: number;
+  /** Skip reasons with counts and a few cookie names (never values). */
+  reasons: Array<{ reason: string; count: number; names: string[] }>;
+}
+
+/**
+ * Import Mozilla-schema cookie rows (Firefox, or the old WebKit jar) into `ses`: handles
+ * `__Host-`/`__Secure-` prefixes, SameSite, expiry in ms or s, container/partitioned cookies, and
+ * flushes the store. With `overwrite: false` a cookie that already exists under the same
+ * name + domain + path is left alone (the live value wins).
+ */
+export async function importMozCookieRows(ses: Session, rows: Array<Record<string, unknown>>, opts: { overwrite?: boolean } = {}): Promise<MozImportResult> {
+  const { raws, skips } = classifyMozCookieRows(rows);
+  const ck = ses.cookies;
+  const keyOf = (name: string, domain: string, p: string) => `${name}\u0000${domain.replace(/^\./, '').toLowerCase()}\u0000${p || '/'}`;
+  const existing = new Set<string>();
+  if (opts.overwrite === false) for (const c of await ck.get({})) existing.add(keyOf(c.name, c.domain ?? '', c.path ?? '/'));
+  let imported = 0;
+  for (const c of raws) {
+    // Container-tab and partitioned (third-party) cookies share name/host/path with the real ones;
+    // setting them unpartitioned would overwrite the genuine sign-in cookies.
+    if (!c.plain) {
+      addSkip(skips, 'container or partitioned cookie', c.name);
+      continue;
+    }
+    const bare = c.host.replace(/^\./, '');
+    if (!/^[a-z0-9.\-_:[\]]+$/i.test(bare)) {
+      addSkip(skips, 'invalid host', c.name);
+      continue;
+    }
+    const prefixHost = c.name.startsWith('__Host-');
+    const secure = c.secure || prefixHost || c.name.startsWith('__Secure-');
+    const cpath = prefixHost ? '/' : c.path.startsWith('/') ? c.path : '/';
+    const key = keyOf(c.name, bare, cpath);
+    if (opts.overwrite === false) {
+      if (existing.has(key)) {
+        addSkip(skips, 'already present', c.name);
+        continue;
+      }
+      existing.add(key);
+    }
+    try {
+      await ck.set({
+        url: `${secure ? 'https' : 'http'}://${bare}${cpath}`,
+        name: c.name,
+        value: c.value,
+        ...(c.host.startsWith('.') && !prefixHost ? { domain: c.host } : {}), // no domain => host-only (required for __Host-)
+        path: cpath,
+        secure,
+        httpOnly: c.httpOnly,
+        expirationDate: c.expiry,
+        sameSite: c.sameSite === 1 ? 'lax' : c.sameSite === 2 ? 'strict' : secure ? 'no_restriction' : 'unspecified',
+      });
+      imported++;
+    } catch (e) {
+      let msg = String((e as Error)?.message ?? e).split('\n')[0].slice(0, 120);
+      if (c.value.length > 3) msg = msg.split(c.value).join('…'); // never leak a value through an error
+      addSkip(skips, msg || 'set failed', c.name);
+    }
+  }
+  // Chromium writes cookies to disk lazily; make the import durable now.
+  await ck.flushStore();
+  const reasons = skipList(skips);
+  return { imported, skipped: reasons.reduce((n, r) => n + r.count, 0), reasons };
+}
+
 export class Logins {
   private indexFile: string;
   constructor(private o: LoginsOptions) {
@@ -123,112 +269,9 @@ export class Logins {
   async importFirefoxCookies(): Promise<FirefoxCookieResult> {
     const profile = this.findProfile();
     if (!profile) throw new Error('No Firefox profile with cookies.sqlite found');
-    type Raw = { name: string; value: string; host: string; path: string; expiry: number; secure: boolean; httpOnly: boolean; sameSite: number; plain: boolean };
-    const raws: Raw[] = [];
-    const skips = new Map<string, { count: number; names: string[] }>();
-    const skip = (reason: string, name: string) => {
-      const e = skips.get(reason) ?? { count: 0, names: [] };
-      e.count++;
-      if (e.names.length < 5 && !e.names.includes(name)) e.names.push(name);
-      skips.set(reason, e);
-    };
-    const now = Math.floor(Date.now() / 1000);
-    // Firefox keeps the live data in cookies.sqlite-wal while it runs. Copy db + wal (+shm) into a
-    // private temp dir and open the copy, so SQLite replays the WAL there; the original is never
-    // opened. The files are not copied atomically, so retry if Firefox checkpointed between the
-    // copies and the snapshot came out inconsistent.
-    let rows: Array<Record<string, unknown>> | null = null;
-    let lastErr: unknown = null;
-    for (let attempt = 0; attempt < 4 && !rows; attempt++) {
-      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jivvy-ffcookies-'));
-      try {
-        for (const f of ['cookies.sqlite', 'cookies.sqlite-wal', 'cookies.sqlite-shm']) {
-          const src = path.join(profile, f);
-          if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, f));
-        }
-        const db = new DatabaseSync(path.join(tmp, 'cookies.sqlite'));
-        try {
-          const cols = new Set((db.prepare('PRAGMA table_info(moz_cookies)').all() as Array<{ name: string }>).map((c) => c.name));
-          const pick = (c: string, fallback: string) => (cols.has(c) ? c : `${fallback} AS ${c}`);
-          rows = db
-            .prepare(`SELECT name, value, host, path, expiry, ${pick('isSecure', '0')}, ${pick('isHttpOnly', '0')}, ${pick('sameSite', '0')}, ${pick('originAttributes', "''")} FROM moz_cookies`)
-            .all() as Array<Record<string, unknown>>;
-        } finally {
-          db.close();
-        }
-      } catch (e) {
-        lastErr = e;
-        await new Promise((r) => setTimeout(r, 150));
-      } finally {
-        fs.rmSync(tmp, { recursive: true, force: true });
-      }
-    }
-    if (!rows) throw new Error(`Could not read Firefox cookies: ${(lastErr as Error)?.message ?? 'unknown error'}`);
-    for (const r of rows) {
-      let expiry = Number(r.expiry);
-      if (expiry > 100_000_000_000) expiry = Math.floor(expiry / 1000); // newer Firefox: ms
-      const name = String(r.name ?? '');
-      const host = String(r.host ?? '');
-      if (!name || !host) {
-        skip('empty name or host', name);
-        continue;
-      }
-      if (expiry > 0 && expiry <= now) {
-        skip('expired', name);
-        continue;
-      }
-      raws.push({
-        name,
-        value: String(r.value ?? ''),
-        host,
-        path: String(r.path || '/'),
-        expiry: expiry > 0 ? Math.min(expiry, now + 400 * 86400) : now + 30 * 86400,
-        secure: Number(r.isSecure) !== 0,
-        httpOnly: Number(r.isHttpOnly) !== 0,
-        sameSite: Number(r.sameSite ?? 0),
-        plain: !String(r.originAttributes ?? ''),
-      });
-    }
-    const cookies = this.o.session().cookies;
-    let imported = 0;
-    for (const c of raws) {
-      // Container-tab and partitioned (third-party) cookies share name/host/path with the real ones;
-      // setting them unpartitioned would overwrite the genuine sign-in cookies.
-      if (!c.plain) {
-        skip('container or partitioned cookie', c.name);
-        continue;
-      }
-      const bare = c.host.replace(/^\./, '');
-      if (!/^[a-z0-9.\-_:[\]]+$/i.test(bare)) {
-        skip('invalid host', c.name);
-        continue;
-      }
-      const prefixHost = c.name.startsWith('__Host-');
-      const secure = c.secure || prefixHost || c.name.startsWith('__Secure-');
-      const cpath = prefixHost ? '/' : c.path.startsWith('/') ? c.path : '/';
-      try {
-        await cookies.set({
-          url: `${secure ? 'https' : 'http'}://${bare}${cpath}`,
-          name: c.name,
-          value: c.value,
-          ...(c.host.startsWith('.') && !prefixHost ? { domain: c.host } : {}), // no domain => host-only (required for __Host-)
-          path: cpath,
-          secure,
-          httpOnly: c.httpOnly,
-          expirationDate: c.expiry,
-          sameSite: c.sameSite === 1 ? 'lax' : c.sameSite === 2 ? 'strict' : secure ? 'no_restriction' : 'unspecified',
-        });
-        imported++;
-      } catch (e) {
-        let msg = String((e as Error)?.message ?? e).split('\n')[0].slice(0, 120);
-        if (c.value.length > 3) msg = msg.split(c.value).join('…'); // never leak a value through an error
-        skip(msg || 'set failed', c.name);
-      }
-    }
-    // Chromium writes cookies to disk lazily; make the import durable now.
-    await this.o.session().cookies.flushStore();
-    const reasons = [...skips].map(([reason, v]) => ({ reason, count: v.count, names: v.names })).sort((a, b) => b.count - a.count);
-    return { imported, skipped: reasons.reduce((n, r) => n + r.count, 0), profile: path.basename(profile), reasons };
+    const rows = await readMozCookieRows(path.join(profile, 'cookies.sqlite'), 'Firefox');
+    const r = await importMozCookieRows(this.o.session(), rows);
+    return { ...r, profile: path.basename(profile) };
   }
 
   // ---------------- passwords ----------------
@@ -319,6 +362,7 @@ export class Logins {
     if (!fillable(u)) throw new Error('page is not https');
     const row = this.readIndex().find((r) => r.host === u.host && r.username === username);
     if (!row) throw new Error('no saved login for this site');
+    if (!row.encryptedPasswordBase64) throw new Error('password was not carried over from the old version; re-enter it (import a Firefox CSV)');
     let pass: string;
     try {
       pass = safeStorage.decryptString(Buffer.from(row.encryptedPasswordBase64, 'base64'));
@@ -342,6 +386,56 @@ if(un)set(un,u);if(pw)set(pw,p);return !!(un||pw);})(${JSON.stringify(username)}
     } catch {
       throw new Error('could not fill this page'); // do not surface the error text: it may echo the script
     }
+  }
+
+  /** True when passwords can be encrypted with a real OS keyring. */
+  keyringUsable(): boolean {
+    try {
+      this.requireKeyring();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Merge logins carried over from the old build. `password: null` stores the username only (the
+   * password is re-entered later: such a row lists in the picker but cannot fill). Never replaces
+   * an existing row that already has a password, and never logs or returns a password.
+   */
+  importMigrated(items: Array<{ host: string; username: string; password: string | null }>): { withPassword: number; usernamesOnly: number; skipped: number } {
+    const canEncrypt = this.keyringUsable();
+    const index = this.readIndex();
+    let withPassword = 0;
+    let usernamesOnly = 0;
+    let skipped = 0;
+    for (const it of items) {
+      const host = it.host.toLowerCase();
+      if (!host || !it.username || it.username.length > 512) {
+        skipped++;
+        continue;
+      }
+      const at = index.findIndex((r) => r.host === host && r.username === it.username);
+      const have = at >= 0 && index[at].encryptedPasswordBase64 !== '';
+      let enc = '';
+      if (it.password && it.password.length <= 4096 && canEncrypt) {
+        try {
+          enc = safeStorage.encryptString(it.password).toString('base64');
+        } catch {
+          enc = '';
+        }
+      }
+      if (have) {
+        skipped++; // already there with a password: leave it
+        continue;
+      }
+      if (at >= 0) index[at] = { host, username: it.username, encryptedPasswordBase64: enc };
+      else index.push({ host, username: it.username, encryptedPasswordBase64: enc });
+      if (enc) withPassword++;
+      else usernamesOnly++;
+    }
+    if (withPassword || usernamesOnly) this.writeIndex(index);
+    return { withPassword, usernamesOnly, skipped };
   }
 
   forgetAll(): number {

@@ -553,6 +553,22 @@ export const SettingsModal: React.FC = () => {
             >
               Import Firefox sessions
             </button>
+            {isElectron && (
+              <button
+                data-action="import-tauri"
+                onClick={() =>
+                  void loginCall(async () => {
+                    const r = await invoke<{ tabs: number; folders: number; notes: number; cookies: { imported: number; skipped: number }; logins: { withPassword: number; usernamesOnly: number; needReentry: number }; errors: string[] }>('migrate_tauri');
+                    const re = r.logins.needReentry ? ` ${r.logins.needReentry} logins need their password re-entered.` : '';
+                    const er = r.errors.length ? ` (${r.errors.join('; ')})` : '';
+                    return `Imported ${r.tabs} tabs, ${r.folders} folders, ${r.notes} notes, ${r.cookies.imported} cookies (${r.cookies.skipped} skipped), ${r.logins.withPassword + r.logins.usernamesOnly} logins from the old Jivvy.${re}${er} Reload your tabs.`;
+                  })
+                }
+                className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
+              >
+                Import from old Jivvy (WebKit) version
+              </button>
+            )}
             <div className="text-xs text-zinc-300">
               <label className="block mb-1">Import saved passwords (Firefox CSV export)</label>
               <input
