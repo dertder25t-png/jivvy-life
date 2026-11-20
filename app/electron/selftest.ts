@@ -470,12 +470,16 @@ export async function runSelfTest(ctx: TestCtx) {
         fs.mkdirSync(prof, { recursive: true });
         fs.writeFileSync(path.join(ffRoot, 'profiles.ini'), '[Profile0]\nName=default\nIsRelative=1\nPath=abc.default\nDefault=1\n');
         const fdb = new DatabaseSync(path.join(prof, 'cookies.sqlite'));
-        fdb.exec('CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, name TEXT, value TEXT, host TEXT, path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, sameSite INTEGER)');
+        fdb.exec('CREATE TABLE moz_cookies (id INTEGER PRIMARY KEY, name TEXT, value TEXT, host TEXT, path TEXT, expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER, sameSite INTEGER, originAttributes TEXT DEFAULT \'\')');
         const ins = fdb.prepare('INSERT INTO moz_cookies (name,value,host,path,expiry,isSecure,isHttpOnly,sameSite) VALUES (?,?,?,?,?,?,?,?)');
         const future = Math.floor(Date.now() / 1000) + 86400;
         ins.run('sid', 'abc123', '.example.test', '/', future, 1, 1, 2);
         ins.run('hostonly', 'v', 'app.example.test', '/p', future * 1000, 0, 0, 1);
         ins.run('old', 'x', '.example.test', '/', Math.floor(Date.now() / 1000) - 100, 0, 0, 0);
+        ins.run('__Host-sid', 'h1', 'accounts.example.test', '/', future * 1000, 1, 1, 0);
+        ins.run('__Secure-sid', 's1', '.example.test', '/', future, 1, 1, 0);
+        ins.run('none_ss', 'n1', 'api.example.test', '/', future, 1, 0, 0);
+        fdb.prepare("INSERT INTO moz_cookies (name,value,host,path,expiry,isSecure,isHttpOnly,sameSite,originAttributes) VALUES ('sid','part','.example.test','/',?,1,1,0,'^partitionKey=%28https%2Cother.test%29')").run(future);
         fdb.close();
         const ses = electronSession.fromPartition(`jivvy-selftest-${Date.now()}`);
         const lg = new Logins({ userData: path.join(scratch, 'ud'), session: () => ses, webContentsOf: (id) => tabs.webContentsOf(id), firefoxRoots: [ffRoot] });
@@ -484,9 +488,18 @@ export async function runSelfTest(ctx: TestCtx) {
         const sid = got.find((c) => c.name === 'sid');
         const ho = got.find((c) => c.name === 'hostonly');
         result(
-          ci.imported === 2 && ci.skipped === 1 && ci.profile === 'abc.default' && !!sid && sid.domain === ".example.test" && !!sid.secure && !!sid.httpOnly && sid.sameSite === 'strict' && !!ho && ho.path === '/p' && !ho.domain?.startsWith('.') && !got.some((c) => c.name === 'old'),
+          ci.imported === 5 && ci.skipped === 2 && ci.reasons.some((x) => x.reason === 'expired' && x.count === 1) && ci.reasons.some((x) => x.count === 1 && x.names.includes('sid')) && ci.profile === 'abc.default' && !!sid && sid.domain === ".example.test" && !!sid.secure && !!sid.httpOnly && sid.sameSite === 'strict' && !!ho && ho.path === '/p' && !ho.domain?.startsWith('.') && !got.some((c) => c.name === 'old'),
           'cookie import from fake Firefox profile (expired skipped, flags kept)',
           JSON.stringify(ci)
+        );
+        const hostC = got.find((c) => c.name === '__Host-sid');
+        const secC = got.find((c) => c.name === '__Secure-sid');
+        const noneC = got.find((c) => c.name === 'none_ss');
+        result(
+          !!hostC && hostC.domain === 'accounts.example.test' && hostC.path === '/' && !!hostC.secure && hostC.sameSite === 'no_restriction' && !!hostC.expirationDate && hostC.expirationDate < Date.now() / 1000 + 2 * 86400 &&
+            !!secC && !!secC.secure && secC.domain === '.example.test' && !!noneC && noneC.sameSite === 'no_restriction' && got.filter((c) => c.name === 'sid').length === 1 && sid?.sameSite === 'strict',
+          'cookie import: __Host-/__Secure-/SameSite=None/ms expiry kept; partitioned copy cannot overwrite real cookie',
+          JSON.stringify(ci.reasons)
         );
         result(!fs.readdirSync(os.tmpdir()).some((f) => f.startsWith('jivvy-ffcookies-')), 'cookie import temp copy deleted');
 

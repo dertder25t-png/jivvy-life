@@ -544,8 +544,9 @@ export const SettingsModal: React.FC = () => {
             <button
               onClick={() =>
                 loginCall(async () => {
-                  const r = await invoke<{ imported: number; skipped: number; profile: string }>('import_firefox_cookies');
-                  return `Imported ${r.imported} cookies (${r.skipped} skipped) from Firefox profile ${r.profile}. Reload open tabs.`;
+                  const r = await invoke<{ imported: number; skipped: number; profile: string; reasons?: Array<{ reason: string; count: number; names: string[] }> }>('import_firefox_cookies');
+                  const why = r.skipped && r.reasons?.length ? `: ${r.reasons.map((x) => `${x.reason} ${x.count}`).join(', ')}` : '';
+                  return `Imported ${r.imported} cookies (${r.skipped} skipped${why}) from Firefox profile ${r.profile}. Reload your tabs.`;
                 })
               }
               className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700"

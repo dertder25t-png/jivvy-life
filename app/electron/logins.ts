@@ -22,6 +22,14 @@ interface LoginRow {
   encryptedPasswordBase64: string;
 }
 
+export interface FirefoxCookieResult {
+  imported: number;
+  skipped: number;
+  profile: string;
+  /** Skip reasons with counts and a few cookie names (never values). */
+  reasons: Array<{ reason: string; count: number; names: string[] }>;
+}
+
 const MAX_CSV = 20 * 1024 * 1024;
 
 export function defaultFirefoxRoots(): string[] {
@@ -112,74 +120,115 @@ export class Logins {
     return null;
   }
 
-  async importFirefoxCookies(): Promise<{ imported: number; skipped: number; profile: string }> {
+  async importFirefoxCookies(): Promise<FirefoxCookieResult> {
     const profile = this.findProfile();
     if (!profile) throw new Error('No Firefox profile with cookies.sqlite found');
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jivvy-ffcookies-'));
-    type Raw = { name: string; value: string; host: string; path: string; expiry: number; secure: boolean; httpOnly: boolean; sameSite: number };
+    type Raw = { name: string; value: string; host: string; path: string; expiry: number; secure: boolean; httpOnly: boolean; sameSite: number; plain: boolean };
     const raws: Raw[] = [];
-    let skipped = 0;
-    try {
-      for (const f of ['cookies.sqlite', 'cookies.sqlite-wal', 'cookies.sqlite-shm']) {
-        const src = path.join(profile, f);
-        if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, f));
-      }
-      const db = new DatabaseSync(path.join(tmp, 'cookies.sqlite'));
+    const skips = new Map<string, { count: number; names: string[] }>();
+    const skip = (reason: string, name: string) => {
+      const e = skips.get(reason) ?? { count: 0, names: [] };
+      e.count++;
+      if (e.names.length < 5 && !e.names.includes(name)) e.names.push(name);
+      skips.set(reason, e);
+    };
+    const now = Math.floor(Date.now() / 1000);
+    // Firefox keeps the live data in cookies.sqlite-wal while it runs. Copy db + wal (+shm) into a
+    // private temp dir and open the copy, so SQLite replays the WAL there; the original is never
+    // opened. The files are not copied atomically, so retry if Firefox checkpointed between the
+    // copies and the snapshot came out inconsistent.
+    let rows: Array<Record<string, unknown>> | null = null;
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 4 && !rows; attempt++) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jivvy-ffcookies-'));
       try {
-        const now = Math.floor(Date.now() / 1000);
-        const rows = db.prepare('SELECT name, value, host, path, expiry, isSecure, isHttpOnly, sameSite FROM moz_cookies').all() as Array<Record<string, unknown>>;
-        for (const r of rows) {
-          let expiry = Number(r.expiry);
-          if (expiry > 100_000_000_000) expiry = Math.floor(expiry / 1000); // newer Firefox: ms
-          const name = String(r.name ?? '');
-          const host = String(r.host ?? '');
-          if (!name || !host || (expiry > 0 && expiry <= now)) {
-            skipped++;
-            continue;
-          }
-          raws.push({
-            name,
-            value: String(r.value ?? ''),
-            host,
-            path: String(r.path || '/'),
-            expiry: expiry > 0 ? Math.min(expiry, now + 400 * 86400) : now + 30 * 86400,
-            secure: Number(r.isSecure) !== 0,
-            httpOnly: Number(r.isHttpOnly) !== 0,
-            sameSite: Number(r.sameSite ?? 0),
-          });
+        for (const f of ['cookies.sqlite', 'cookies.sqlite-wal', 'cookies.sqlite-shm']) {
+          const src = path.join(profile, f);
+          if (fs.existsSync(src)) fs.copyFileSync(src, path.join(tmp, f));
         }
+        const db = new DatabaseSync(path.join(tmp, 'cookies.sqlite'));
+        try {
+          const cols = new Set((db.prepare('PRAGMA table_info(moz_cookies)').all() as Array<{ name: string }>).map((c) => c.name));
+          const pick = (c: string, fallback: string) => (cols.has(c) ? c : `${fallback} AS ${c}`);
+          rows = db
+            .prepare(`SELECT name, value, host, path, expiry, ${pick('isSecure', '0')}, ${pick('isHttpOnly', '0')}, ${pick('sameSite', '0')}, ${pick('originAttributes', "''")} FROM moz_cookies`)
+            .all() as Array<Record<string, unknown>>;
+        } finally {
+          db.close();
+        }
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 150));
       } finally {
-        db.close();
+        fs.rmSync(tmp, { recursive: true, force: true });
       }
-    } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+    if (!rows) throw new Error(`Could not read Firefox cookies: ${(lastErr as Error)?.message ?? 'unknown error'}`);
+    for (const r of rows) {
+      let expiry = Number(r.expiry);
+      if (expiry > 100_000_000_000) expiry = Math.floor(expiry / 1000); // newer Firefox: ms
+      const name = String(r.name ?? '');
+      const host = String(r.host ?? '');
+      if (!name || !host) {
+        skip('empty name or host', name);
+        continue;
+      }
+      if (expiry > 0 && expiry <= now) {
+        skip('expired', name);
+        continue;
+      }
+      raws.push({
+        name,
+        value: String(r.value ?? ''),
+        host,
+        path: String(r.path || '/'),
+        expiry: expiry > 0 ? Math.min(expiry, now + 400 * 86400) : now + 30 * 86400,
+        secure: Number(r.isSecure) !== 0,
+        httpOnly: Number(r.isHttpOnly) !== 0,
+        sameSite: Number(r.sameSite ?? 0),
+        plain: !String(r.originAttributes ?? ''),
+      });
     }
     const cookies = this.o.session().cookies;
     let imported = 0;
     for (const c of raws) {
-      const bare = c.host.replace(/^\./, '');
-      if (!/^[a-z0-9.\-_:[\]]+$/i.test(bare)) {
-        skipped++;
+      // Container-tab and partitioned (third-party) cookies share name/host/path with the real ones;
+      // setting them unpartitioned would overwrite the genuine sign-in cookies.
+      if (!c.plain) {
+        skip('container or partitioned cookie', c.name);
         continue;
       }
+      const bare = c.host.replace(/^\./, '');
+      if (!/^[a-z0-9.\-_:[\]]+$/i.test(bare)) {
+        skip('invalid host', c.name);
+        continue;
+      }
+      const prefixHost = c.name.startsWith('__Host-');
+      const secure = c.secure || prefixHost || c.name.startsWith('__Secure-');
+      const cpath = prefixHost ? '/' : c.path.startsWith('/') ? c.path : '/';
       try {
         await cookies.set({
-          url: `${c.secure ? 'https' : 'http'}://${bare}${c.path.startsWith('/') ? c.path : '/'}`,
+          url: `${secure ? 'https' : 'http'}://${bare}${cpath}`,
           name: c.name,
           value: c.value,
-          ...(c.host.startsWith('.') ? { domain: c.host } : {}), // no domain => host-only cookie
-          path: c.path,
-          secure: c.secure,
+          ...(c.host.startsWith('.') && !prefixHost ? { domain: c.host } : {}), // no domain => host-only (required for __Host-)
+          path: cpath,
+          secure,
           httpOnly: c.httpOnly,
           expirationDate: c.expiry,
-          sameSite: c.sameSite === 1 ? 'lax' : c.sameSite === 2 ? 'strict' : c.secure ? 'no_restriction' : 'unspecified',
+          sameSite: c.sameSite === 1 ? 'lax' : c.sameSite === 2 ? 'strict' : secure ? 'no_restriction' : 'unspecified',
         });
         imported++;
-      } catch {
-        skipped++;
+      } catch (e) {
+        let msg = String((e as Error)?.message ?? e).split('\n')[0].slice(0, 120);
+        if (c.value.length > 3) msg = msg.split(c.value).join('…'); // never leak a value through an error
+        skip(msg || 'set failed', c.name);
       }
     }
-    return { imported, skipped, profile: path.basename(profile) };
+    // Chromium writes cookies to disk lazily; make the import durable now.
+    await this.o.session().cookies.flushStore();
+    const reasons = [...skips].map(([reason, v]) => ({ reason, count: v.count, names: v.names })).sort((a, b) => b.count - a.count);
+    return { imported, skipped: reasons.reduce((n, r) => n + r.count, 0), profile: path.basename(profile), reasons };
   }
 
   // ---------------- passwords ----------------
