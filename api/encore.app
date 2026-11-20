@@ -3,6 +3,7 @@
 	"lang": "typescript",
 	"global_cors": {
 		"allow_origins_without_credentials": [
+			"app://jivvy",
 			"http://localhost:1420",
 			"tauri://localhost",
 			"http://tauri.localhost",
