@@ -9,6 +9,10 @@
 			"http://tauri.localhost",
 			"https://tauri.localhost"
 		],
+		"allow_origins_with_credentials": [
+			"app://jivvy",
+			"http://localhost:1420"
+		],
 		"allow_headers": ["Authorization", "Content-Type"]
 	}
 }

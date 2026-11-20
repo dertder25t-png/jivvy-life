@@ -55,6 +55,14 @@ function emit() {
   window.dispatchEvent(new Event(API_CONFIG_EVENT));
 }
 
+// Electron runs Settings in a separate overlay view (same origin, shared localStorage). A sign-in
+// there must also wake sync in the main UI view, so re-emit when another view changes these keys.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === SESSION_KEY || e.key === BASE_KEY || e.key === null) emit();
+  });
+}
+
 export function getApiBase(): string {
   try {
     const stored = localStorage.getItem(BASE_KEY);
