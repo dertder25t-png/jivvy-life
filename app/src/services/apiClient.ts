@@ -3,7 +3,7 @@
  * ~10s timeouts, typed errors. A 401 clears the session and marks the app signed out.
  *
  * ALPHA NOTE: the session token is stored in localStorage ('jivvy_session'). Fine for alpha;
- * move to the OS keyring (Tauri) before wider release. The password is never persisted.
+ * move to the OS keyring (Electron safeStorage) before wider release. The password is never persisted.
  */
 export const DEFAULT_API_BASE = 'https://staging-jivvy-life-api-ei5i.encr.app';
 const LEGACY_LOCAL_BASE = 'http://127.0.0.1:4000';

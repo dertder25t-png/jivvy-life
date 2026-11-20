@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { X, Database } from 'lucide-react';
-import { nativeInvoke as invoke, isTauri, isNative, isElectron, jivvy } from '../platform';
+import { nativeInvoke as invoke, isNative, isElectron, jivvy } from '../platform';
 import { usePredictions } from '../lib/predictions';
 import type { HistoryClearRange, ImportStatus, MemoryStatus } from '../../shared/ipc';
 import { MAX_AWAKE_MAX, MAX_AWAKE_MIN, type PromptPermission } from '../../shared/state';
@@ -9,9 +9,6 @@ import type { BenchResult } from '../../shared/lifeboard/bench';
 import { nightly } from '../../shared/lifeboard/evallog';
 import type { EvalLine } from '../../shared/lifeboard/evallog';
 import type { SnapshotEval } from '../../shared/history-types';
-import { getVersion } from '@tauri-apps/api/app';
-import { check, Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { useWorkspaceStore } from '../store/workspaceStore';
 import { normalizeHost } from '../services/blocking';
 import { api, getApiBase, setApiBase, getSession, API_CONFIG_EVENT, Session } from '../services/apiClient';
@@ -166,58 +163,6 @@ export const SettingsModal: React.FC = () => {
     setSiteInput('');
     if (!blockingDisabledSites.includes(h)) setBlockingDisabledSites([...blockingDisabledSites, h]);
   };
-  const inTauri = isTauri;
-  const [installKind, setInstallKind] = useState<'appimage' | 'native' | ''>('');
-  const [appVersion, setAppVersion] = useState('');
-  const [update, setUpdate] = useState<Update | null>(null);
-  const [updMsg, setUpdMsg] = useState('');
-  const [updBusy, setUpdBusy] = useState(false);
-  const checkUpdates = async () => {
-    setUpdBusy(true);
-    setUpdMsg('Checking...');
-    try {
-      const u = await check();
-      setUpdate(u);
-      setUpdMsg(u ? '' : 'You are up to date.');
-    } catch {
-      setUpdate(null);
-      setUpdMsg('Could not check for updates. Updates work in the installed AppImage build.');
-    } finally {
-      setUpdBusy(false);
-    }
-  };
-  const installUpdate = async () => {
-    if (!update) return;
-    setUpdBusy(true);
-    let total = 0;
-    let got = 0;
-    setUpdMsg('Downloading...');
-    try {
-      await update.downloadAndInstall((ev) => {
-        if (ev.event === 'Started') total = ev.data.contentLength ?? 0;
-        else if (ev.event === 'Progress') {
-          got += ev.data.chunkLength;
-          setUpdMsg(total ? `Downloading... ${Math.round((got / total) * 100)}%` : `Downloading... ${Math.round(got / 1024)} KB`);
-        } else if (ev.event === 'Finished') setUpdMsg('Installing...');
-      });
-      setUpdMsg('Restarting...');
-      await relaunch();
-    } catch (e) {
-      setUpdMsg(`Update failed: ${e instanceof Error ? e.message : String(e)}. Updates work in the installed AppImage build.`);
-      setUpdBusy(false);
-    }
-  };
-  useEffect(() => {
-    if (!settingsModalOpen || !inTauri) return;
-    getVersion().then(setAppVersion).catch(() => {});
-    invoke<string>('install_kind')
-      .then((k) => {
-        setInstallKind(k === 'appimage' ? 'appimage' : 'native');
-        if (k === 'appimage') void checkUpdates();
-      })
-      .catch(() => setInstallKind('native'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsModalOpen]);
   useEffect(() => {
     if (!settingsModalOpen || !isNative) return;
     let live = true;
@@ -426,38 +371,6 @@ export const SettingsModal: React.FC = () => {
             </form>
           )}
         </div>
-
-        {inTauri && installKind === 'native' && (
-          <div className="border-t border-zinc-800 pt-3">
-            <p className="text-xs text-zinc-400">
-              Installed from source. Update with <code className="text-zinc-300">npm run app:install</code>.
-            </p>
-          </div>
-        )}
-
-        {inTauri && installKind === 'appimage' && (
-          <div className="space-y-2 border-t border-zinc-800 pt-3">
-            <h4 className="text-xs font-semibold text-zinc-200">Updates</h4>
-            <p className="text-xs text-zinc-400">Current version {appVersion || '...'}</p>
-            {update && (
-              <div className="space-y-1">
-                <p className="text-xs text-emerald-400">Version {update.version} is available.</p>
-                {update.body && <p className="text-xs text-zinc-400 whitespace-pre-wrap max-h-24 overflow-auto">{update.body}</p>}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <button disabled={updBusy} onClick={() => void checkUpdates()} className="px-3 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-100 hover:bg-zinc-700 disabled:opacity-50">
-                Check for updates
-              </button>
-              {update && (
-                <button disabled={updBusy} onClick={() => void installUpdate()} className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50">
-                  Update &amp; restart
-                </button>
-              )}
-            </div>
-            {updMsg && <p className="text-xs text-zinc-400">{updMsg}</p>}
-          </div>
-        )}
 
         {isElectron && (
           <div className="space-y-2 border-t border-zinc-800 pt-3" data-section="history">

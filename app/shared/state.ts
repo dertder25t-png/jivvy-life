@@ -1,4 +1,4 @@
-// The workspace state machine, shared by the renderer (Tauri / browser builds) and the Electron
+// The workspace state machine, shared by the renderer (plain-browser dev build) and the Electron
 // main process (single source of truth). `reduce` is pure apart from timestamps and the odd
 // generated id, so both sides produce identical results for the same action.
 

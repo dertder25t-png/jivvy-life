@@ -87,7 +87,7 @@
 }
 
 /* ---- Electron ------------------------------------------------------------------------------ */
-/* Window drag region (Tauri used data-tauri-drag-region). */
+/* Window drag region. */
 html.electron .app-drag {
   -webkit-app-region: drag;
 }

@@ -2,8 +2,7 @@
 // Lifeboard decide()/complete() in shared/lifeboard, see src/lib/predictions.ts). The laya/NPU
 // helper stays installed for future features; nothing on disk was removed.
 // laya = local OpenVINO "vega" reader (helper/laya_server.py on 127.0.0.1:8770).
-// Calls go through Rust (laya_classify / laya_health) which does the TCP call with a 1.5 s timeout.
-// The Electron build answers both with null for now (laya returns in Phase 2).
+// The Electron build answers laya_classify / laya_health with null for now.
 // POST /decide {text} -> {ok, p_ai, ms};  GET /health -> {ok, ready, device, infer_device, ...}
 import { nativeInvoke as invoke } from '../../platform';
 
@@ -25,7 +24,7 @@ export async function layaClassify(text: string): Promise<LayaOut | null> {
     const o = await invoke<LayaOut | null>('laya_classify', { text });
     return o && typeof o.p_ai === 'number' ? o : null;
   } catch {
-    return null; // not running inside Tauri, or command failed
+    return null; // not running inside the desktop app, or command failed
   }
 }
 

@@ -8,7 +8,7 @@ import { setOverlay } from '../lib/overlay';
 import { useHoverIntent } from '../lib/useHoverIntent';
 import { NAV_EVENT } from './TopTabBar';
 import { normalizeHost } from '../services/blocking';
-import { jivvy, isElectron, isNative, isTauri, floatsToOverlay, nativeInvoke as invoke, openOverlay } from '../platform';
+import { jivvy, isElectron, isNative, floatsToOverlay, nativeInvoke as invoke, openOverlay } from '../platform';
 import { LAYOUT, chromeInsets } from '../../shared/layout';
 import type { SuggestItem } from '../../shared/ipc';
 import { DownloadsButton } from './Downloads';
@@ -140,11 +140,11 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setHovered, floating, autoHide]);
 
-  // Offer a key button when saved logins exist for the active web tab's origin (Tauri only).
+  // Offer a key button when saved logins exist for the active web tab's origin (Electron).
   useEffect(() => {
     setPickOpen(false);
     setLogins([]);
-    if (!isTauri || activeType !== 'web' || !activeHost) return;
+    if (!isElectron || activeType !== 'web' || !activeHost) return;
     let live = true;
     invoke<string[]>('logins_for', { origin: activeUrlRef.current })
       .then((l) => live && setLogins(l))
@@ -249,13 +249,6 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
     },
     []
   );
-  // Tauri: native pane webviews paint above HTML, so hide them while the list is open.
-  useEffect(() => {
-    if (!isTauri) return;
-    setOverlay('suggest', suggestOpen);
-    return () => setOverlay('suggest', false);
-  }, [suggestOpen]);
-
   // Follow the active tab unless the user is typing.
   useEffect(() => {
     if (!focused) setValue(activeUrl);
@@ -332,7 +325,7 @@ export const AddressBar: React.FC<{ floating?: boolean; autoFocus?: boolean }> =
       return;
     }
     window.dispatchEvent(new CustomEvent(NAV_EVENT, { detail: { action } }));
-    if (action !== 'reload' || isTauri) return;
+    if (action !== 'reload') return;
     const frame = document.querySelector<HTMLIFrameElement>('iframe');
     if (frame) frame.src = frame.src;
   };

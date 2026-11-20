@@ -881,8 +881,6 @@ async function command(cmd: string, args: Record<string, unknown>): Promise<unkn
     case 'free_memory':
       if (typeof args.targetMB !== 'number' || !(args.targetMB > 0) || args.targetMB > 1_000_000) throw new Error('Bad target');
       return memsaver.freeMemory(args.targetMB);
-    case 'install_kind':
-      return 'electron';
     case 'find':
       if (!shortStr(args.text, 500)) throw new Error('Bad text');
       findText(args.text, { forward: args.forward !== false, next: args.next === true });
@@ -1100,7 +1098,7 @@ function setupPageSession() {
 
 // ---- Window ----------------------------------------------------------------------------------
 function createWindow() {
-  const icon = [path.join(__dirname, '..', 'src-tauri', 'icons', 'icon.png'), path.join(__dirname, 'icon.png')].find((p) => fs.existsSync(p));
+  const icon = [path.join(app.getAppPath(), 'assets', 'icons', '128x128.png'), path.join(__dirname, '..', 'assets', 'icons', '128x128.png')].find((p) => fs.existsSync(p));
   win = new BaseWindow({
     width: 1440,
     height: 900,

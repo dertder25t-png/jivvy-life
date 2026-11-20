@@ -86,7 +86,7 @@ if (rules.length > MAX_RULES) throw new Error('rule cap exceeded')
 const json = JSON.stringify(rules)
 JSON.parse(json)
 const sha = createHash('sha256').update(json).digest('hex')
-const outDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'src-tauri', 'blocklist')
+const outDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'blocklist')
 mkdirSync(outDir, { recursive: true })
 writeFileSync(join(outDir, 'blocklist.json'), json)
 writeFileSync(

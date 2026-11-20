@@ -59,7 +59,7 @@ export const menuPos = (r: { x: number; y: number; width: number; height: number
   bottom: viewport().height - r.y + 4,
 });
 
-/** The menu itself. Drawn inline (Tauri, or inside an overlay surface) or as the overlay's popup. */
+/** The menu itself. Drawn inline (inside an overlay surface) or as the overlay's popup. */
 export const HamburgerPanel: React.FC<{
   placement: MenuPlacement;
   pos: PanelPos;

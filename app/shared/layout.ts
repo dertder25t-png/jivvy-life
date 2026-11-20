@@ -7,7 +7,7 @@ export type ZenBarPosition = 'left' | 'top' | 'bottom';
 
 export const LAYOUT = {
   /** The old drag header (h-8). The window has a native title bar and the header drew nothing, so
-   *  no layout reserves it any more; kept only so the Tauri build's header keeps its height. */
+   *  no layout reserves it any more; kept for the saved layout shape. */
   TOP_BAR_H: 32,
   /** Classic top tab strip (h-10). */
   TAB_BAR_H: 40,

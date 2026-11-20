@@ -223,7 +223,7 @@ interface CtxMenu {
 
 const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-zinc-300 hover:bg-zinc-800';
 
-/** Right-click menu for a tab. Inline (Tauri / inside an overlay surface) or the overlay's popup. */
+/** Right-click menu for a tab. Inline (inside an overlay surface) or the overlay's popup. */
 export const TabContextMenu: React.FC<{
   tabId: string;
   x: number;

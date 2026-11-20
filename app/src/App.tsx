@@ -91,7 +91,7 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-zinc-950 text-zinc-100 overflow-hidden">
       {!isElectron && !isZen && showTopBar && (
-        <header data-tauri-drag-region className="app-drag h-8 bg-zinc-900 border-b border-zinc-800 shrink-0" />
+        <header className="app-drag h-8 bg-zinc-900 border-b border-zinc-800 shrink-0" />
       )}
 
       {layoutMode === 'classic-top' && <TopTabBar />}

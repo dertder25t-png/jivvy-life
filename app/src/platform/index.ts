@@ -1,9 +1,7 @@
 // Which shell the UI runs in, and the few platform calls components need.
 // - Electron: `window.jivvy` (preload). Two UI views: the base view (chrome under the pages) and
 //   the overlay view (`#overlay`, transparent, floats menus/modals/hover UI over the pages).
-// - Tauri: `__TAURI_INTERNALS__`, the original single-webview build.
 // - Plain browser (vite dev without a shell): iframes, no native features.
-import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import type { JivvyApi, OverlaySpec } from '../../shared/ipc';
 
 declare global {
@@ -14,9 +12,8 @@ declare global {
 
 export const jivvy: JivvyApi | undefined = typeof window !== 'undefined' ? window.jivvy : undefined;
 export const isElectron = !!jivvy;
-export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 /** A native shell is present (pages are native views, blocking etc. available). */
-export const isNative = isElectron || isTauri;
+export const isNative = isElectron;
 export const role: 'base' | 'overlay' | 'edge' =
   typeof location !== 'undefined' && (location.hash === '#overlay' || location.hash === '#edge') ? (location.hash.slice(1) as 'overlay' | 'edge') : 'base';
 /** Running inside the Electron top-edge hover strip view (reveals the auto-hidden address bar). */
@@ -33,10 +30,9 @@ export function closeOverlay() {
   jivvy?.overlayClose();
 }
 
-/** Native command: Electron main or the Tauri backend. Rejects when there is no native shell. */
+/** Native command: Electron main. Rejects when there is no native shell. */
 export function nativeInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (jivvy) return jivvy.invoke<T>(cmd, args);
-  if (isTauri) return tauriInvoke<T>(cmd, args);
   return Promise.reject(new Error('Not available outside the desktop app'));
 }
 

@@ -190,7 +190,7 @@ export const ZenOmnibox: React.FC = () => {
     };
   }, []);
 
-  // Native child webviews paint above the DOM: tell PaneContainer to hide them while the palette is open.
+  // Registers the palette as an open overlay.
   useEffect(() => {
     setOverlay('omnibox', open);
     return () => setOverlay('omnibox', false);

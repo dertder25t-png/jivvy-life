@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    watch: { ignored: ['**/src-tauri/**', '**/dist-electron/**', '**/electron/**'] },
+    watch: { ignored: ['**/dist-electron/**', '**/electron/**'] },
   },
   build: {
     rollupOptions: {

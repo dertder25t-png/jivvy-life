@@ -33,7 +33,7 @@ const entries = [
  * "ignore-previous-rules" entries are the never-block exceptions.
  */
 export function buildBlocklist() {
-  const src = path.join(root, 'src-tauri/blocklist/blocklist.json');
+  const src = path.join(root, 'blocklist/blocklist.json');
   const out = path.join(outDir, 'blocklist-domains.json');
   if (fs.existsSync(out) && fs.statSync(out).mtimeMs >= fs.statSync(src).mtimeMs) return;
   const rules = JSON.parse(fs.readFileSync(src, 'utf8'));

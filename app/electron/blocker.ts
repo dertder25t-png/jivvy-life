@@ -1,5 +1,5 @@
 // Ad & tracker blocking for the page session. The EasyList/EasyPrivacy domain rules from
-// src-tauri/blocklist/blocklist.json are extracted at build time into a flat domain list
+// blocklist/blocklist.json are extracted at build time into a flat domain list
 // (dist-electron/blocklist-domains.json); here they become Sets and every request is checked
 // by walking its host's labels: O(labels), no regex.
 import fs from 'node:fs';

@@ -187,7 +187,7 @@ export interface JivvyApi {
   predictionsBench(): Promise<BenchResult | null>;
   /** Recent nightly self-evaluation lines (oldest first), for the Settings sparkline. */
   predictionsEvalLog(): Promise<EvalLine[]>;
-  /** Native commands (Tauri `invoke` equivalents). Unported ones reject with "not yet available". */
+  /** Native commands. Unported ones reject with "not yet available". */
   invoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T>;
 }
 

@@ -9,7 +9,7 @@ import {
 } from '../types/workspace';
 import { storageService } from '../services/storageService';
 import { telemetryService } from '../services/telemetryService';
-import { normalizeHost, pushBlocking, MAX_BLOCK_SITES } from '../services/blocking';
+import { normalizeHost, MAX_BLOCK_SITES } from '../services/blocking';
 import { reduce, hydrate, type Action, type PersistedState, type Prefs, type PromptPermission } from '../../shared/state';
 import { EMPTY_HUD, type InitPayload, type RuntimeState, type StatePatch } from '../../shared/ipc';
 import { jivvy, isElectron, isOverlayRole, openOverlay, closeOverlay } from '../platform';
@@ -17,7 +17,7 @@ import { jivvy, isElectron, isOverlayRole, openOverlay, closeOverlay } from '../
 export type ZenBarPosition = 'left' | 'top' | 'bottom';
 
 // In Electron the main process owns this state: actions are sent to it and every change comes
-// back as a patch (the store is a thin mirror). Elsewhere (Tauri / browser) the same reducer
+// back as a patch (the store is a thin mirror). Elsewhere (plain browser, vite dev) the same reducer
 // runs here and the result is saved to localStorage, as before.
 
 const UI_PREFS_KEY = 'life_app_ui_prefs_v1';
@@ -118,8 +118,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
     if (next.notes !== prev.notes) storageService.saveNotes(next.notes);
     if (next.layoutMode !== prev.layoutMode) storageService.saveLayoutMode(next.layoutMode);
     if (a.type === 'setPref') saveUiPrefs(next);
-    if (next.blockingEnabled !== prev.blockingEnabled || next.blockingDisabledSites !== prev.blockingDisabledSites)
-      pushBlocking(next.blockingEnabled, next.blockingDisabledSites);
     set(next);
   };
   const pref = <K extends keyof Prefs>(key: K) => (value: Prefs[K]) => act({ type: 'setPref', key, value });
@@ -156,7 +154,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => {
 
     clearAllTabs: () => act({ type: 'clearAllTabs' }),
     navigateTab: (tabId, url, title) => act({ type: 'navigateTab', tabId, url, title }),
-    // Page-driven updates come from main in Electron; this is the Tauri path.
+    // Page-driven updates come from main in Electron.
     syncTabFromPage: (tabId, url, title) => {
       if (!jivvy) act({ type: 'syncTabFromPage', tabId, url, title });
     },
@@ -255,7 +253,6 @@ if (!isElectron) {
     useWorkspaceStore.setState((st) => reduce(st, { type: 'applyPulled', ...p }));
   });
   storageService.init(initial.workspaces, initial.notes);
-  pushBlocking(initial.blockingEnabled, initial.blockingDisabledSites);
 }
 
 export type { WorkspaceManifest };
