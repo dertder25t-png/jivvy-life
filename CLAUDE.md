@@ -27,9 +27,14 @@ Encore API. It originally grew out of the Lifeboard Firefox extension.
 - `npm run electron:dev` dev window with hot reload; `npm run electron:build` typecheck + build;
   `npm run electron:package` build + package to `out/jivvy-life-linux-x64/`.
 - `npm run app:install` / `app:uninstall` user install in `~/.local` (atomic swap; user data kept).
-- Self-test: `JIVVY_SELFTEST=1 timeout 300 npx electron . --user-data-dir=<scratch dir>` (must print `SELFTEST OK`).
-  Also works on the packaged binary. `npm run electron:selftest` does the same.
 - `npm run bench:search`; `node --test shared/lifeboard/lifeboard.test.ts`.
+
+## Testing (run in `app/`)
+- `npm run test:app` = all 159 Electron checks (~70 s); `npm run test:app:quick` = without media, perf, memsaver (~30 s). Both rebuild first; `JIVVY_SKIP_BUILD=1` skips that.
+- One or more groups: `bash scripts/selftest.sh core,security` (or `JIVVY_SELFTEST=<groups>`). Needed groups are pulled in automatically; a bad name lists the valid ones and exits 2.
+- Groups (electron/selftest/*.ts; `setup` always runs first): tabs (real web tabs, needs internet), history, core, media (slow), security, migration, predictions, perf (slow), browsing, persistence, memsaver (slow).
+- Always runs on a throwaway profile (mktemp dir, deleted after), never `~/.config/jivvy-life`. Output: a `GROUP` line per group, then `SELFTEST OK: N passed, 0 failed`.
+- Add a check: put it in the matching group file; shared helpers are in `electron/selftest/kit.ts`.
 
 ## Data (`~/.config/jivvy-life`)
 `jivvy-state.json` (workspaces, notes, prefs), `history.sqlite`, `predictions.json`, `predictions-eval.jsonl`.

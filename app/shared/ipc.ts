@@ -3,6 +3,7 @@
 
 import type { Action, PersistedState } from './state';
 import type { Rect } from './layout';
+import type { GoogleAuthResult } from './google';
 import type { TypedInput, UiSnapshot, Visit } from './history-types';
 import type { BenchResult } from './lifeboard/bench';
 import type { EvalLine } from './lifeboard/evallog';
@@ -174,6 +175,8 @@ export interface JivvyApi {
   historyClear(range: HistoryClearRange): Promise<number>;
   /** Opt-in, one shot: copy Firefox's history into the local store. Settings button calls this. */
   historyImportFirefox(): Promise<ImportStatus>;
+  /** Opens the system browser for Google sign-in; resolves with the OAuth code + PKCE verifier to send to the API. */
+  authGoogle(): Promise<GoogleAuthResult>;
   historyImportStatus(): Promise<ImportStatus>;
   /** Throttled (<= 4/s) push of import progress while an import runs. */
   onHistoryImportStatus(cb: (s: ImportStatus) => void): () => void;
@@ -209,6 +212,7 @@ export const CH = {
   historyRecent: 'history:recent',
   historyClear: 'history:clear',
   historyImportFirefox: 'history:importFirefox',
+  authGoogle: 'auth:google',
   historyImportStatus: 'history:importStatus',
   predictions: 'predictions:get',
   predictionsUpdated: 'predictions:updated',

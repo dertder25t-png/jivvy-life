@@ -138,6 +138,7 @@ export const SettingsModal: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState(''); // component state only, never persisted
   const [busy, setBusy] = useState(false);
+  const [showEmail, setShowEmail] = useState(false);
   const [status, setStatus] = useState('');
   useEffect(() => {
     const onCfg = () => setSessionState(getSession());
@@ -282,6 +283,12 @@ export const SettingsModal: React.FC = () => {
       setBusy(false);
     }
   };
+  const googleSignIn = () =>
+    run(async () => {
+      setApiBase(baseUrl);
+      await api.loginWithGoogle();
+      return 'Signed in with Google.';
+    });
   const auth = (mode: 'login' | 'signup') =>
     run(async () => {
       setApiBase(baseUrl);
@@ -390,6 +397,21 @@ export const SettingsModal: React.FC = () => {
               </p>
             </div>
           ) : (
+            <div className="space-y-3">
+            <button
+              type="button"
+              data-action="google-signin"
+              disabled={busy}
+              onClick={() => void googleSignIn()}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-white text-zinc-900 hover:bg-zinc-200 disabled:opacity-60"
+            >
+              <span className="font-bold text-base leading-none" aria-hidden="true">G</span>
+              {busy ? 'Waiting for Google in your browser…' : 'Sign in with Google'}
+            </button>
+            <button type="button" onClick={() => setShowEmail((v) => !v)} className="text-xs text-zinc-400 hover:text-zinc-200 underline">
+              {showEmail ? 'Hide email and password' : 'Use email and password instead'}
+            </button>
+            {showEmail && (
             <form
               className="space-y-2"
               onSubmit={(e) => {
@@ -407,8 +429,10 @@ export const SettingsModal: React.FC = () => {
                   Sign up
                 </button>
               </div>
-              <p className="text-xs text-zinc-500">Not signed in: everything stays local on this device.</p>
             </form>
+            )}
+            <p className="text-xs text-zinc-500">Not signed in: everything stays local on this device.</p>
+            </div>
           )}
         </div>
 </div>

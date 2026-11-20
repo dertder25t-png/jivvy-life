@@ -23,7 +23,7 @@ const LOGINS_FILE = 'logins_index.json';
 const log = (...a: unknown[]) => console.error('[migrate]', ...a);
 
 export function defaultTauriDir(): string {
-  const env = process.env.JIVVY_SELFTEST === '1' ? process.env.JIVVY_TAURI_DIR : undefined; // tests only
+  const env = process.env.JIVVY_SELFTEST !== undefined && process.env.JIVVY_SELFTEST !== '' && process.env.JIVVY_SELFTEST !== '0' ? process.env.JIVVY_TAURI_DIR : undefined; // tests only
   if (env) return env;
   return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 'com.jivvy.life');
 }

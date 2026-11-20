@@ -1,3 +1,4 @@
+import { jivvy } from '../platform';
 /**
  * Jivvy Life API client (Encore backend). Thin fetch wrapper: base URL + bearer token,
  * ~10s timeouts, typed errors. A 401 clears the session and marks the app signed out.
@@ -143,6 +144,14 @@ export const api = {
   },
   async login(email: string, password: string): Promise<Session> {
     const r = await request<Session>('POST', '/auth/login', { email, password }, false);
+    const s = { token: r.token, userId: r.userId, email: r.email };
+    setSession(s);
+    return s;
+  },
+  async loginWithGoogle(): Promise<Session> {
+    if (!jivvy) throw new Error('Google sign-in needs the desktop app.');
+    const { code, codeVerifier, redirectUri } = await jivvy.authGoogle();
+    const r = await request<Session>('POST', '/auth/google', { code, codeVerifier, redirectUri }, false);
     const s = { token: r.token, userId: r.userId, email: r.email };
     setSession(s);
     return s;

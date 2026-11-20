@@ -10,6 +10,7 @@ import { StateStore } from './store';
 import { TabManager } from './tabs';
 import { Blocker } from './blocker';
 import { HistoryStore } from './history';
+import { googleSignIn } from './google-auth';
 import { Trainer } from './trainer';
 import { lagOp, startLagMon } from './lagmon';
 import { MemorySaver, readProcMeminfo } from './memsaver';
@@ -30,7 +31,7 @@ const log = (...a: unknown[]) => console.error('[jivvy]', ...a);
 
 // ---- Modes & paths ----------------------------------------------------------------------------
 const DEV_URL = process.env.JIVVY_DEV_URL?.replace(/\/$/, '') || '';
-const SELFTEST = process.env.JIVVY_SELFTEST === '1';
+const SELFTEST = process.env.JIVVY_SELFTEST !== undefined && process.env.JIVVY_SELFTEST !== '' && process.env.JIVVY_SELFTEST !== '0';
 const SNAPSHOT = process.env.JIVVY_SNAPSHOT === '1';
 const RENDERER_DIR = path.join(__dirname, '..', 'dist');
 const UI_ORIGIN = DEV_URL || 'app://jivvy';
@@ -1007,6 +1008,10 @@ function registerIpc() {
     const st = await history.importFirefox();
     if (st.state === 'done') void trainer.train(true);
     return st;
+  });
+  ipcMain.handle(CH.authGoogle, async (e) => {
+    if (!isFromUi(e)) throw new Error('Rejected');
+    return googleSignIn();
   });
   ipcMain.handle(CH.predictions, (e) => (isFromUi(e) ? trainer.snapshot : null));
   ipcMain.handle(CH.predictionsTrain, (e) => {
