@@ -1,0 +1,1 @@
+{"version":"0.0.1","configurations":[{"name":"jivvy-electron","runtimeExecutable":"npm","runtimeArgs":["--prefix","app","run","electron:dev"],"port":1420}]}
