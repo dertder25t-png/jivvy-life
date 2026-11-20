@@ -25,6 +25,8 @@ cp -a "$PKG" "$LIB_DIR.new"
 [ -e "$LIB_DIR" ] && mv "$LIB_DIR" "$LIB_DIR.old"
 mv "$LIB_DIR.new" "$LIB_DIR"
 rm -rf "$LIB_DIR.old"
+# The packaged copy is now installed; don't leave a second ~280 MB copy of the app in the project.
+rm -rf "$APP_DIR/out"
 
 # Wrapper (replaces anything already there, including the old Tauri binary).
 mkdir -p "$BIN_DIR"
