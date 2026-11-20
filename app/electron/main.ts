@@ -38,7 +38,9 @@ const UI_ORIGIN = DEV_URL || 'app://jivvy';
 // Separate profile (tests, side-by-side runs): --user-data-dir=PATH or JIVVY_USER_DATA.
 const udArg = process.argv.find((a) => a.startsWith('--user-data-dir='))?.slice('--user-data-dir='.length);
 const userData = udArg || process.env.JIVVY_USER_DATA;
-if (userData) app.setPath('userData', path.resolve(userData));
+// Default profile is pinned to ~/.config/jivvy-life: Electron would otherwise derive it from
+// productName ("Jivvy Life") and silently start a fresh, empty profile.
+app.setPath('userData', userData ? path.resolve(userData) : path.join(app.getPath('appData'), 'jivvy-life'));
 
 // ---- Chromium flags: Wayland with fractional scaling, server-side decorations ---------------
 if (!app.commandLine.hasSwitch('ozone-platform-hint') && !app.commandLine.hasSwitch('ozone-platform'))
