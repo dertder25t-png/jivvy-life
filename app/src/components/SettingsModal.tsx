@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { X, Database } from 'lucide-react';
+import { X, Database, Settings as SettingsIcon, RefreshCw, History, Cpu, Shield, Globe, KeyRound } from 'lucide-react';
 import { nativeInvoke as invoke, isNative, isElectron, jivvy } from '../platform';
 import { usePredictions } from '../lib/predictions';
 import type { HistoryClearRange, ImportStatus, MemoryStatus } from '../../shared/ipc';
@@ -36,8 +36,7 @@ const SitePermissionsSection: React.FC = () => {
   const remove = useWorkspaceStore((st) => st.removeSitePermission);
   const origins = Object.keys(sitePermissions);
   return (
-    <div className="space-y-2 border-t border-zinc-800 pt-3" data-site-permissions>
-      <h4 className="text-xs font-semibold text-zinc-200">Site permissions</h4>
+    <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4" data-site-permissions>
       <p className="text-xs text-zinc-500">Sites ask before using your camera, microphone, location, notifications, clipboard or MIDI. Remove an entry and the site will ask again.</p>
       {origins.length === 0 && <p className="text-xs text-zinc-500">No saved decisions.</p>}
       {origins.map((origin) => (
@@ -63,6 +62,8 @@ const SitePermissionsSection: React.FC = () => {
     </div>
   );
 };
+
+type SectionId = 'general' | 'sync' | 'history' | 'memory' | 'privacy' | 'permissions' | 'logins';
 
 const SLEEP_LABELS: Array<[number, string]> = [[5, '5 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour'], [0, 'Never']];
 
@@ -94,8 +95,7 @@ const MemorySection: React.FC = () => {
   };
   const sel = 'bg-zinc-950 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-100 focus:outline-none focus:border-indigo-500';
   return (
-    <div className="space-y-2 border-t border-zinc-800 pt-3" data-section="memory">
-      <h4 className="text-xs font-semibold text-zinc-200">Memory</h4>
+    <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4" data-section="memory">
       <label className="flex items-center justify-between text-xs text-zinc-300">
         <span>Sleep tabs after</span>
         <select aria-label="Sleep tabs after" value={sleepAfterMin} onChange={(e) => setSleepAfterMin(Number(e.target.value))} className={sel}>
@@ -149,6 +149,15 @@ export const SettingsModal: React.FC = () => {
       window.removeEventListener(SYNC_STATUS_EVENT, onStatus);
     };
   }, []);
+  const [activeSection, setActiveSection] = useState<SectionId>('general');
+  useEffect(() => {
+    if (!settingsModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSettingsModalOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [settingsModalOpen, setSettingsModalOpen]);
   const [loginMsg, setLoginMsg] = useState('');
   const [blockStatus, setBlockStatus] = useState<{ ready: boolean; rules: number; enabled: boolean } | null>(null);
   const [siteInput, setSiteInput] = useState('');
@@ -281,24 +290,53 @@ export const SettingsModal: React.FC = () => {
       return mode === 'login' ? 'Logged in.' : 'Account created.';
     });
 
+  const allSections: Array<{ id: SectionId; label: string; icon: React.ReactNode; show: boolean }> = [
+    { id: 'general', label: 'General', icon: <SettingsIcon className="w-4 h-4" />, show: true },
+    { id: 'sync', label: 'Sync', icon: <RefreshCw className="w-4 h-4" />, show: true },
+    { id: 'history', label: 'History & predictions', icon: <History className="w-4 h-4" />, show: isElectron },
+    { id: 'memory', label: 'Memory', icon: <Cpu className="w-4 h-4" />, show: isElectron },
+    { id: 'privacy', label: 'Privacy', icon: <Shield className="w-4 h-4" />, show: isNative },
+    { id: 'permissions', label: 'Site permissions', icon: <Globe className="w-4 h-4" />, show: isElectron },
+    { id: 'logins', label: 'Logins', icon: <KeyRound className="w-4 h-4" />, show: isNative },
+  ];
+  const sections = allSections.filter((s) => s.show);
+  const current = sections.find((s) => s.id === activeSection) ?? sections[0];
+
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-md p-5 space-y-4">
-        <div className="flex items-center justify-between">
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) setSettingsModalOpen(false); }}>
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-4xl h-[min(640px,85vh)] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800 shrink-0">
           <h3 className="font-semibold text-zinc-100 flex items-center gap-2">
             <Database className="w-4 h-4 text-emerald-400" /> Settings
           </h3>
-          <button onClick={() => setSettingsModalOpen(false)} className="text-zinc-400 hover:text-white">
+          <button onClick={() => setSettingsModalOpen(false)} aria-label="Close settings" className="text-zinc-400 hover:text-white">
             <X className="w-4 h-4" />
           </button>
         </div>
-
-        <div className="space-y-2 pb-3 border-b border-zinc-800">
-          {!isElectron && <Toggle label="Show top bar" checked={showTopBar} onChange={setShowTopBar} />}
-          <Toggle label="Show folders in sidebar" checked={showFolders} onChange={setShowFolders} />
-          <Toggle label="Auto-hide address bar (hover the top edge to show it)" checked={autoHideAddressBar} onChange={setAutoHideAddressBar} />
-          <Toggle label="Clear tabs when the app starts" checked={clearTabsOnStart} onChange={setClearTabsOnStart} />
-          <div className="flex items-center justify-between text-xs text-zinc-300 pt-1">
+        <div className="flex flex-col md:flex-row flex-1 min-h-0">
+          <nav className="shrink-0 md:w-[180px] flex md:flex-col gap-1 overflow-x-auto md:overflow-y-auto border-b md:border-b-0 md:border-r border-zinc-800 p-2">
+            {sections.map((s) => (
+              <button
+                key={s.id}
+                data-settings-tab={s.id}
+                onClick={() => setActiveSection(s.id)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs whitespace-nowrap text-left ${current.id === s.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'}`}
+              >
+                {s.icon}
+                {s.label}
+              </button>
+            ))}
+          </nav>
+          <div className="flex-1 min-w-0 overflow-y-auto p-5 space-y-4">
+            <h4 className="text-sm font-semibold text-zinc-100">{current.label}</h4>
+            {current.id === 'general' && (
+<div className="grid md:grid-cols-2 gap-3">
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">{!isElectron && <Toggle label="Show top bar" checked={showTopBar} onChange={setShowTopBar} />}</div>
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4"><Toggle label="Show folders in sidebar" checked={showFolders} onChange={setShowFolders} /></div>
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4"><Toggle label="Auto-hide address bar (hover the top edge to show it)" checked={autoHideAddressBar} onChange={setAutoHideAddressBar} /></div>
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4"><Toggle label="Clear tabs when the app starts" checked={clearTabsOnStart} onChange={setClearTabsOnStart} /></div>
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+          <div className="flex items-center justify-between gap-2 text-xs text-zinc-300">
             <span>Zen mode hover bar edge</span>
             <select
               value={zenBarPosition}
@@ -310,10 +348,12 @@ export const SettingsModal: React.FC = () => {
               <option value="bottom">Bottom edge</option>
             </select>
           </div>
-        </div>
-
+</div>
+</div>
+            )}
+            {current.id === 'sync' && (
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
         <div className="space-y-2">
-          <h4 className="text-xs font-semibold text-zinc-200">Sync</h4>
           <label className="block text-xs text-zinc-400">API base URL</label>
           <input
             value={baseUrl}
@@ -371,10 +411,10 @@ export const SettingsModal: React.FC = () => {
             </form>
           )}
         </div>
-
-        {isElectron && (
-          <div className="space-y-2 border-t border-zinc-800 pt-3" data-section="history">
-            <h4 className="text-xs font-semibold text-zinc-200">History &amp; predictions</h4>
+</div>
+            )}
+            {current.id === 'history' && isElectron && (
+          <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4" data-section="history">
             <Toggle label="Save browsing history" checked={saveHistory} onChange={setSaveHistory} />
             <p className="text-xs text-zinc-500">Kept only on this computer. It powers address suggestions and shortcuts.</p>
             <div className="flex flex-wrap gap-2">
@@ -403,13 +443,11 @@ export const SettingsModal: React.FC = () => {
             </div>
             {histMsg && <p className="text-xs text-indigo-300">{histMsg}</p>}
           </div>
-        )}
-
-        {isElectron && <MemorySection />}
-
-        {isNative && (
-          <div className="space-y-2 border-t border-zinc-800 pt-3">
-            <h4 className="text-xs font-semibold text-zinc-200">Privacy</h4>
+            )}
+            {current.id === 'memory' && isElectron && <MemorySection />}
+            {current.id === 'privacy' && isNative && (
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+          <div className="space-y-3">
             <Toggle label="Block ads & trackers" checked={blockingEnabled} onChange={setBlockingEnabled} />
             <p className="text-xs text-zinc-500">
               {!blockingEnabled ? 'Blocking is off.' : blockStatus?.ready ? `Blocking ${blockStatus.rules.toLocaleString()} trackers` : 'Getting ready…'}
@@ -447,13 +485,12 @@ export const SettingsModal: React.FC = () => {
             </div>
             <p className="text-[10px] text-zinc-500">Filter lists: EasyList &amp; EasyPrivacy (easylist.to), CC BY-SA 3.0</p>
           </div>
-        )}
-
-        {isElectron && <SitePermissionsSection />}
-
-        {isNative && (
-          <div className="space-y-2 border-t border-zinc-800 pt-3">
-            <h4 className="text-xs font-semibold text-zinc-200">Logins</h4>
+</div>
+            )}
+            {current.id === 'permissions' && isElectron && <SitePermissionsSection />}
+            {current.id === 'logins' && isNative && (
+<div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+          <div className="space-y-3">
             <button
               onClick={() =>
                 loginCall(async () => {
@@ -510,10 +547,11 @@ export const SettingsModal: React.FC = () => {
             </button>
             {loginMsg && <p className="text-xs text-indigo-300">{loginMsg}</p>}
           </div>
-        )}
-
-        {status && <p className="text-xs text-indigo-300">{status}</p>}
-
+</div>
+            )}
+            {status && <p className="text-xs text-indigo-300">{status}</p>}
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -815,6 +815,9 @@ export async function runSelfTest(ctx: TestCtx) {
       await ui(`window.jivvy.overlayOpen({ kind: 'settings' })`);
       await waitFor(() => runtime.overlay?.kind === 'settings' && !!ctx.overlayRect(), 4000);
       const ov = () => ctx.overlay()!.webContents;
+      // Settings is tabbed: the retrain button lives on the "History & predictions" tab.
+      await waitFor(() => ov().executeJavaScript(`!!document.querySelector('[data-settings-tab="history"]')`), 4000);
+      await ov().executeJavaScript(`document.querySelector('[data-settings-tab="history"]').click()`);
       await waitFor(() => ov().executeJavaScript(`!!document.querySelector('[data-action="retrain"]')`), 4000);
       const views = () => [base(), ov()];
       for (const v of views()) await v.executeJavaScript(`window.__jivvyLagStart && window.__jivvyLagStart(); window.__jivvyLagReset && window.__jivvyLagReset()`);
@@ -1041,7 +1044,9 @@ export async function runSelfTest(ctx: TestCtx) {
       result(r2 === 'err1' && !runtime.hud.perm, 'a remembered Block denies silently (no second prompt)', r2);
       await ui(`window.jivvy.overlayOpen({ kind: 'settings' })`);
       await waitFor(() => runtime.overlay?.kind === 'settings' && !!ctx.overlayRect(), 4000);
-      const listed = await waitFor(() => ov().executeJavaScript(`!!document.querySelector('[data-site-permission="${O}|geolocation"]')`), 4000);
+      await waitFor(() => ov().executeJavaScript(`!!document.querySelector('[data-settings-tab="permissions"]')`), 4000);
+      await ov().executeJavaScript(`document.querySelector('[data-settings-tab="permissions"]').click()`);
+      const listed =await waitFor(() => ov().executeJavaScript(`!!document.querySelector('[data-site-permission="${O}|geolocation"]')`), 4000);
       result(listed, 'Settings -> Site permissions lists the remembered decision');
       await ov().executeJavaScript(`document.querySelector('[data-site-permission="${O}|geolocation"] button').click()`);
       result(await waitFor(() => !ctx.store.state.sitePermissions[O], 3000), 'Settings -> Site permissions: a decision can be removed');
